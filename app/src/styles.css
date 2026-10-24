@@ -1,0 +1,23 @@
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}
+
+#root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The scaled game area: exactly LOGICAL_WIDTH x LOGICAL_HEIGHT scaled to fit
+   the window with letterboxing (spec 6.4). Everything inside is positioned
+   in scaled logical units. */
+.game-area {
+  position: relative;
+  user-select: none;
+}

@@ -1,0 +1,9 @@
+.DS_Store
+png/
+core/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+app/node_modules/
+app/dist/
+app/src-tauri/target/
