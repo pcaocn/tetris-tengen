@@ -13,6 +13,35 @@ import {
 import { drawSaintBasilsScene } from "./cathedral";
 import { logicalCanvas } from "./draw";
 
+// Introduction theme (owner request 2026-10-25): plays on the title
+// screen only, looping; unmounting stops it.
+import introUrl from "../../../music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg?url";
+
+const MUSIC_VOLUME = 0.6;
+
+function TitleMusic() {
+  const ref = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.volume = MUSIC_VOLUME;
+    el.play().catch(() => {});
+    // WKWebView can block autoplay until the first user gesture; start
+    // playback on the first key press or click if still paused.
+    const kick = () => {
+      if (el.paused) el.play().catch(() => {});
+    };
+    window.addEventListener("keydown", kick);
+    window.addEventListener("pointerdown", kick);
+    return () => {
+      window.removeEventListener("keydown", kick);
+      window.removeEventListener("pointerdown", kick);
+      el.pause();
+    };
+  }, []);
+  return <audio ref={ref} src={introUrl} loop preload="auto" />;
+}
+
 const SCENE_W = 1960;
 const SCENE_H = 1476;
 
@@ -110,6 +139,7 @@ export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }
     >
       {band}
       <div style={{ position: "relative", flex: 1 }}>
+        <TitleMusic />
         <div
           style={{ position: "absolute", inset: `${24 * scale}px`, background: FRAME_DARK }}
         />

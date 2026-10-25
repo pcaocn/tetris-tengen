@@ -9,7 +9,8 @@ St. Basil's Cathedral scene, echoing the original game's Moscow theme.
 The gameplay follows the owner-verified Tengen rules recorded in
 [**TENGEN_TETRIS_SPEC.md**](TENGEN_TETRIS_SPEC.md) — the authoritative
 design document for this project. This is an original tribute: no
-sprites, artwork, or assets from the original game are used.
+sprites or artwork from the original game are used; music files in
+`music/` come from the owner's own collection.
 
 ## Features
 
@@ -27,6 +28,8 @@ sprites, artwork, or assets from the original game are used.
 - **Stats panel**: per-piece spawn counts as vertical bars, aligned to
   equal height, with ticks every 10 pieces.
 - **Classic cheat code** on the title screen (see How to play).
+- **Music**: the introduction theme loops on the title screen (more
+  tracks to come in `music/`).
 - **High-score persistence**, pause, and a 60 Hz game loop driven by the
   Python core — the UI renders state and never computes game rules.
 

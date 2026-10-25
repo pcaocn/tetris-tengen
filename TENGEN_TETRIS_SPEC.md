@@ -208,6 +208,7 @@ tengen-tetris/
 - **Start / title screen** (owner request 2026-10-24): the composition follows `png/screenshot_00.png` — gold border bands with green diamond studs top and bottom, a full-screen light-blue double frame, a red italic `TETRIS` wordmark, and the **Saint Basil's Cathedral scene** filling the frame, adapted from the owner's reference render `png/Saint_Basil's_Cathedral_render.ts` (`cathedral.ts`: pale sky with sun, stone platform, terracotta walls with white arcade, onion domes — gold, blue/green spiral-striped, red checkered — each with an Orthodox cross, and the central tent tower with gold lattice). Two gold text lines near the bottom ("TENGEN-STYLE TRIBUTE" and a blinking "PRESS ENTER"). An original composition; no original artwork or text is copied (spec 1 non-goals).
 - **Pause:** freezes the frame loop and shows PAUSE over the playfield.
 - **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again.
+- **Title music** (owner request 2026-10-25): `music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg` loops on the title screen only (imported via Vite `?url`, volume 0.6); it stops when the game starts. More tracks (gameplay themes) will be added to `music/` later. The owner supplies and tracks the music files by decision (spec 1 non-goals cover artwork, not the owner's own music files).
 
 Exact text, positions, and timing: **TBD**, from the owner's reference captures.
 
