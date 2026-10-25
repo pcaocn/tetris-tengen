@@ -21,3 +21,19 @@ body,
   position: relative;
   user-select: none;
 }
+
+/* Blinking title prompt (spec 5): hard on/off like the original. */
+@keyframes blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.blink {
+  animation: blink 1.1s steps(1) infinite;
+}

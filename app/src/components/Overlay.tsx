@@ -1,9 +1,11 @@
 import { FONT_SMOOTH, LAYOUT, OVERLAY_DIM, TEXT_COLOR } from "../theme";
 import type { GameStatus } from "../hooks/useGameState";
+import { TitleScreen } from "./TitleScreen";
 
 export type OverlayPhase = "connecting" | "start" | GameStatus;
 
-// Status overlays drawn over the playfield (spec section 5). Exact text,
+// Status overlays drawn over the playfield (spec section 5). The "start"
+// phase renders the full title screen (TitleScreen). Other exact text,
 // positions, and timing are TBD from the owner's captures (open item);
 // these are functional placeholders.
 export function Overlay({
@@ -11,12 +13,17 @@ export function Overlay({
   score,
   notice,
   scale,
+  cheat,
 }: {
   phase: OverlayPhase;
   score: number;
   notice: string | null;
   scale: number;
+  cheat?: boolean;
 }) {
+  if (phase === "start") {
+    return <TitleScreen scale={scale} cheat={cheat} />;
+  }
   const { x, y, cols, rows, cell, frameOuter, frameInner } = LAYOUT.playfield;
   const box = {
     position: "absolute" as const,
@@ -44,15 +51,6 @@ export function Overlay({
   switch (phase) {
     case "connecting":
       content = <div style={text(48)}>CONNECTING...</div>;
-      break;
-    case "start":
-      content = (
-        <div style={text(44)}>
-          TENGEN TETRIS
-          <br />
-          PRESS ENTER
-        </div>
-      );
       break;
     case "paused":
       content = <div style={text(56)}>PAUSE</div>;

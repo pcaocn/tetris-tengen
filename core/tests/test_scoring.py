@@ -1,6 +1,11 @@
 """Scoring, clear dissolve, and level progression tests (spec 4.5)."""
 
-from tetris_core.game import CLEAR_ANIM_FRAMES, Game, Status
+from tetris_core.game import (
+    CLEAR_ANIM_FRAMES,
+    Game,
+    Status,
+    locked_color_index,
+)
 from tetris_core.scoring import (
     BONUS_BLOCK_LINES,
     BLOCK_BONUS_POINTS,
@@ -104,9 +109,47 @@ def test_bonus_block_awarded_at_30_line_boundary(tmp_path):
     assert game.level == 1  # placeholder rule: one level per 30-line block
 
 
-def test_color_index_changes_with_level(tmp_path):
+def test_color_index_changes_with_level():
+    # Owner decision 2026-10-24 (spec 6.2): the locked color cycles every
+    # 10 levels — level 0 grayish white ... 8 purple, 9 green again —
+    # then repeats (10 back to 0, 11 = 1, ...).
     from tetris_core.game import LOCKED_COLOR_INDICES, locked_color_index
 
-    assert locked_color_index(0) == LOCKED_COLOR_INDICES[0]
-    assert locked_color_index(len(LOCKED_COLOR_INDICES)) == LOCKED_COLOR_INDICES[0]
-    assert locked_color_index(1) != locked_color_index(0)
+    assert len(LOCKED_COLOR_INDICES) == 10
+    assert locked_color_index(0) == 0
+    assert locked_color_index(6) == 6
+    assert locked_color_index(8) == 8
+    assert locked_color_index(9) == 9
+    assert locked_color_index(10) == 0
+    assert locked_color_index(11) == 1
+
+
+def test_cheat_set_level_jumps_level(tmp_path):
+    # Cheat (owner request 2026-10-25): jump to a level mid-game; gravity
+    # and the locked color change immediately and progression continues
+    # from the new level.
+    core = Core(highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O]))
+    game = core.game
+    assert game.level == 0
+    assert game.set_level(8) is True
+    assert game.level == 8
+    assert game._start_level == 8
+    assert locked_color_index(game.level) == 8
+    # Clamped to the cheat range 0..9.
+    assert game.set_level(12) is True
+    assert game.level == 9
+    # Not while the game is over.
+    game.status = Status.GAME_OVER
+    assert game.set_level(3) is False
+
+
+def test_cheat_set_level_command(tmp_path):
+    core = Core(highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O]))
+    replies = core.handle_line('{"cmd": "set_level", "level": 8}')
+    assert replies[0]["ok"] is True
+    assert replies[1]["level"] == 8
+    assert replies[1]["color_index"] == 8
+    # Out-of-range, missing, and non-integer levels are rejected.
+    assert core.handle_line('{"cmd": "set_level", "level": 10}')[0]["ok"] is False
+    assert core.handle_line('{"cmd": "set_level"}')[0]["ok"] is False
+    assert core.handle_line('{"cmd": "set_level", "level": "eight"}')[0]["ok"] is False

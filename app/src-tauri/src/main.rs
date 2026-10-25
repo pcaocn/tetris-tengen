@@ -211,6 +211,13 @@ fn pause(core: State<'_, Arc<PythonCore>>) -> Result<(), String> {
     core.send_command(json!({ "cmd": "pause" }))
 }
 
+// Cheat: jump to a level mid-game (owner request 2026-10-25; unlocked in
+// the UI by the classic code on the title screen).
+#[tauri::command]
+fn set_level(core: State<'_, Arc<PythonCore>>, level: Option<i64>) -> Result<(), String> {
+    core.send_command(json!({ "cmd": "set_level", "level": level.unwrap_or(0) }))
+}
+
 #[tauri::command]
 fn get_state(core: State<'_, Arc<PythonCore>>) -> Result<Option<Value>, String> {
     core.send_command(json!({ "cmd": "get_state" }))?;
@@ -230,6 +237,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             send_input,
             new_game,
+            set_level,
             pause,
             get_state,
             start_core

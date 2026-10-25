@@ -18,8 +18,42 @@ export const LAYOUT = {
   playfield: { x: 144, y: 120, cols: 10, rows: 20, cell: 84, frameOuter: 12, frameInner: 8 },
   next: { x: 1120, y: 176, boxW: 400, boxH: 224, cell: 56, labelSize: 40 },
   score: { x: 1120, y: 480, rowHeight: 136, labelSize: 40, valueSize: 52 },
-  stats: { x: 1120, y: 1104, rowHeight: 96, titleSize: 48, labelSize: 40, cell: 20 },
+  stats: { x: 1120, y: 1104, titleSize: 48, cell: 28, barWidth: 28, barHeight: 560, gap: 6 },
 };
+
+// Stats bars (spec 4.9, owner decisions 2026-10-24/25): one vertical bar
+// per piece, growing upward from the glyph, all tracks at the same
+// height. Each piece's weight is scaled so the bar fills slowly: full at
+// 120 pieces of one kind, which lands around level 10 (10x slower than
+// the previous draft of 12, per the 30-lines-per-level progression).
+// A horizontal tick marks every 10 pieces.
+export const STATS_BAR_MAX = 120;
+export const STATS_TICK_EVERY = 10;
+
+// Line-clear wipe (spec 4.5, owner decision 2026-10-24): cleared rows are
+// wiped from the center outward, one column-pair every this many frames
+// (5 pairs: {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; 4 frames each = 20 of the
+// 24 CLEAR_ANIM_FRAMES, the label stays for the rest).
+export const WIPE_FRAMES_PER_PAIR = 4;
+
+// Award label shown over the playfield during the wipe (spec 4.5).
+export const CLEAR_LABELS: Record<number, string> = {
+  1: "SINGLE",
+  2: "DOUBLE",
+  3: "TRIPLE",
+  4: "TETRIS",
+};
+
+// Title screen (spec 5, owner request 2026-10-24): modeled on the layout
+// of png/screenshot_00.png — gold border bands with green diamond studs, a
+// full-screen light-blue double frame, decorative falling-piece artwork,
+// and two gold text lines near the bottom (the second is the blinking
+// start prompt). No original artwork or text is copied (spec 1 non-goals).
+export const TITLE_GOLD = "#e6b467";
+export const TITLE_GOLD_DARK = "#9e6d20";
+export const TITLE_GREEN = "#449a25";
+export const TITLE_TEXT_SIZE = 60;
+export const TITLE_PROMPT_SIZE = 52;
 
 // ---------------------------------------------------------------------------
 // Exact Tengen palettes, sampled pixel-by-pixel from the owner's captures
@@ -49,13 +83,24 @@ export const FALLING_COLORS: Record<string, BlockTrio> = {
 };
 
 // Locked pieces all take one color per level (spec 6.2), indexed by
-// color_index in the state event. Sampled: index 0 = the stack color in
-// screenshot_07..27; index 1 = the attract-demo stack color in
-// 00_coverscreenshot.png. The full per-level table is TBD from captures
-// covering more levels (open item, spec section 13).
+// color_index in the state event. Owner decision 2026-10-24: the color
+// cycles every 10 levels — 0 grayish white, 1 red (I), 2 goldish yellow
+// (T), 3 blue (O), 4 yellow (J), 5 pink (L), 6 green (S), 7 tortoise
+// (Z), 8 purple, 9 green (S) again — then repeats (level 11 = 1, 12 = 2,
+// and so on).
+const LOCKED_GRAY: BlockTrio = { light: "#f0f0f0", mid: "#c8c8c8", dark: "#878787" };
+const LOCKED_PURPLE: BlockTrio = { light: "#e993ff", mid: "#a24cc0", dark: "#661f8c" };
 export const LOCKED_COLORS: BlockTrio[] = [
-  { light: "#7cdfa1", mid: "#349859", dark: "#0c6f30" },
-  { light: "#8be16d", mid: "#449a25", dark: "#1b7100" },
+  LOCKED_GRAY,
+  FALLING_COLORS.I,
+  FALLING_COLORS.T,
+  FALLING_COLORS.O,
+  FALLING_COLORS.J,
+  FALLING_COLORS.L,
+  FALLING_COLORS.S,
+  FALLING_COLORS.Z,
+  LOCKED_PURPLE,
+  FALLING_COLORS.S,
 ];
 
 // Screen chrome, sampled from the captures: decorative double frame around

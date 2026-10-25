@@ -172,9 +172,10 @@ tengen-tetris/
 ### 4.5 Line clears, scoring, and levels
 
 - Per-clear award values, owner-verified 2026-10-24 from the award table in `png/screenshot_28.png`: single **100**, double **400**, triple **900**, tetris **2500** (`POINTS_FOR_CLEAR` in `scoring.py`). Score, lines, and level update immediately when the piece locks.
-- Line-clear animation (owner request 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and dissolve in place for `CLEAR_ANIM_FRAMES` (24) frames before being removed; the next piece spawns after the dissolve. The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the flicker (each cell cycles the locked color's light/mid/dark shades with per-column gaps).
+- Line-clear animation (owner decisions 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and are wiped **from the center to both sides** — one column-pair every 4 frames (pairs {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; `WIPE_FRAMES_PER_PAIR` in `theme.ts`) — then the rows are removed and the next piece spawns after `CLEAR_ANIM_FRAMES` (24). While the wipe runs, the award label **SINGLE / DOUBLE / TRIPLE / TETRIS** (by number of rows) shows centered **inside the cleared row(s)** (`CLEAR_LABELS`). The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the wipe and the label.
 - Tengen awards line-clear bonuses only after each 30 lines. **VERIFY** this against the source, including what happens to lines cleared that are not part of a bonus block.
 - Level progression: **VERIFY** how the level advances (for example, every 10 lines, or as Tengen defines it). Do not assume the Nintendo rule.
+- Cheat (owner request 2026-10-25): typing the classic Konami sequence on the title screen — **↑ ↑ ↓ ↓ ← → ← → B A**, physical keys — unlocks cheat mode. The indicator is the cathedral itself: the central tent tower's tip dome turns **green** on the title screen. During play, digit keys **0-9** jump to that level immediately via the `set_level` protocol command: gravity and the locked color change at once, and progression continues from the new level (`Game.set_level`; UI tracking in `App.tsx`).
 - Score cap: **TBD**. Confirm from the source.
 
 ### 4.6 Piece generator (RNG)
@@ -194,6 +195,7 @@ tengen-tetris/
 ### 4.9 Statistics
 
 - Count how many times each piece has spawned in the current game. Show all seven counts in the stats panel.
+- Owner decision 2026-10-24, per the captures: the counts render as **vertical bars growing upward** — one column per piece with the glyph at the bottom and a bar above it that grows upward with the count; every bar track sits at the same height (fixed-height glyph area). Owner correction 2026-10-25: the per-piece weight is scaled so the bar fills slowly — full at **120 pieces of one kind**, which lands around level 10 (the 12-of-a-kind draft filled within a minute of play). A horizontal tick marks every 10 pieces; the numeric readout is gone (`StatsPanel.tsx`, `STATS_BAR_MAX` / `STATS_TICK_EVERY` in `theme.ts`).
 
 ### 4.10 High score
 
@@ -203,7 +205,7 @@ tengen-tetris/
 
 ## 5. Screens
 
-- **Start:** the playfield shows a short prompt, and the player presses Start to begin. Level select is optional for v1; default level 0.
+- **Start / title screen** (owner request 2026-10-24): the composition follows `png/screenshot_00.png` — gold border bands with green diamond studs top and bottom, a full-screen light-blue double frame, a red italic `TETRIS` wordmark, and the **Saint Basil's Cathedral scene** filling the frame, adapted from the owner's reference render `png/Saint_Basil's_Cathedral_render.ts` (`cathedral.ts`: pale sky with sun, stone platform, terracotta walls with white arcade, onion domes — gold, blue/green spiral-striped, red checkered — each with an Orthodox cross, and the central tent tower with gold lattice). Two gold text lines near the bottom ("TENGEN-STYLE TRIBUTE" and a blinking "PRESS ENTER"). An original composition; no original artwork or text is copied (spec 1 non-goals).
 - **Pause:** freezes the frame loop and shows PAUSE over the playfield.
 - **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again.
 
@@ -238,7 +240,7 @@ Measurements (playfield offset, cell size, panel sizes): **TBD**. Capture the Te
 
 - **Falling pieces** show their own color by kind, as in the reference.
 - **Locked pieces** all become the same color when they lock, due to NES picture memory limits. The color changes from level to level. This is the Tengen behavior.
-- The locked color for each level comes from a table in Python (`color_index` in the state event). **TBD**: the owner must supply the per-level locked-color table, sampled from Tengen captures.
+- The locked color changes with the level. Owner decision 2026-10-24 (replaces the previous TBD): the color cycles every **10 levels** — level 0 **grayish white**, 1 red (piece I), 2 goldish yellow (T), 3 blue (O), 4 yellow (J), 5 pink (L), 6 green (S), 7 tortoise (Z), 8 purple, 9 green (S) again — then repeats (level 10 back to grayish white, 11 = 1, 12 = 2, and so on). The core sends `color_index = level % 10` (`locked_color_index`); the UI maps it through the `LOCKED_COLORS` table in `theme.ts`.
 - The falling-piece colors and the locked-color table are the two palettes. Store both in `theme.ts`.
 
 ### 6.3 Palette and blocks

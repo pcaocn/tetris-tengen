@@ -57,6 +57,14 @@ class Core:
             if isinstance(level, bool) or not isinstance(level, int):
                 raise ValueError("level must be an integer")
             self.game.new_game(level)
+        elif cmd == "set_level":
+            level = msg.get("level")
+            if isinstance(level, bool) or not isinstance(level, int):
+                raise ValueError("level must be an integer")
+            if not 0 <= level <= 9:
+                raise ValueError("level must be 0..9")
+            if not self.game.set_level(level):
+                raise ValueError("cannot change level while not playing")
         elif cmd == "pause":
             self.game.pause()
         elif cmd == "get_state":

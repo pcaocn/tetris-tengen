@@ -76,29 +76,6 @@ function edgeFade(
   ctx.fillRect(rx, ry, rw, rh);
 }
 
-// A solid rounded cell in one flat color (no bevels), used by the
-// line-clear dissolve (spec 4.5).
-export function drawCellColor(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  size: number,
-  color: string,
-): void {
-  const inset = Math.max(1, size * 0.02);
-  const radius = Math.max(2, size * 0.12);
-  roundedPath(
-    ctx,
-    x + inset,
-    y + inset,
-    size - inset * 2,
-    size - inset * 2,
-    Math.max(1, radius - inset),
-  );
-  ctx.fillStyle = color;
-  ctx.fill();
-}
-
 export function drawBlock(
   ctx: CanvasRenderingContext2D,
   x: number,

@@ -52,7 +52,12 @@ CLEAR_ANIM_FRAMES = 24
 # Locked-piece color index per level (spec 6.2): UNVERIFIED PLACEHOLDER
 # table; the owner must supply the per-level indices sampled from Tengen
 # captures (open item). The UI maps the index to a hex color in theme.ts.
-LOCKED_COLOR_INDICES = (0, 1, 2, 3, 4, 5, 6, 7)
+# Locked-cell color cycle (spec 6.2): owner decision 2026-10-24 — the
+# locked color changes with the level and repeats every 10 levels
+# (0 grayish white, 1 red, 2 goldish yellow, 3 blue, 4 yellow, 5 pink,
+# 6 green, 7 tortoise, 8 purple, 9 green again; level 10 back to 0).
+# The UI indexes its LOCKED_COLORS table with this value.
+LOCKED_COLOR_INDICES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 
 class Status(Enum):
@@ -172,6 +177,18 @@ class Game:
             self._lock()
             return True
         return changed
+
+    def set_level(self, level: int) -> bool:
+        """Cheat (owner request 2026-10-25): jump to the given level
+        mid-game. Gravity and the locked color change immediately; the
+        start level moves too, so progression continues from the new
+        level instead of reverting on the next clear.
+        """
+        if self.status is not Status.PLAYING:
+            return False
+        self.level = max(0, min(level, 9))
+        self._start_level = self.level
+        return True
 
     # ------------------------------------------------------------------
     # Read accessors

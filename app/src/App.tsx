@@ -27,6 +27,22 @@ function fitScale(width: number, height: number, integerScale: boolean): number 
   return raw;
 }
 
+// Konami cheat (owner request 2026-10-25): typing this key sequence on
+// the title screen unlocks cheat mode; digits 0-9 then jump the level
+// during play.
+const CHEAT_CODE = [
+  "ArrowUp",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowLeft",
+  "ArrowRight",
+  "KeyB",
+  "KeyA",
+];
+
 export default function App() {
   const { state, notice, error, retry } = useGameState();
   const [size, setSize] = useState({
@@ -37,6 +53,9 @@ export default function App() {
   const hasStartedRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const [cheatUnlocked, setCheatUnlocked] = useState(false);
+  const cheatRef = useRef(false);
+  const cheatPosRef = useRef(0);
 
   useEffect(() => {
     const onResize = () =>
@@ -62,6 +81,27 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Cheat mode (owner request 2026-10-25): the classic sequence typed
+      // on the title screen unlocks it; digits 0-9 jump the level in play.
+      if (!hasStartedRef.current && stateRef.current) {
+        if (e.code === CHEAT_CODE[cheatPosRef.current]) {
+          cheatPosRef.current += 1;
+          if (cheatPosRef.current === CHEAT_CODE.length) {
+            cheatPosRef.current = 0;
+            cheatRef.current = true;
+            setCheatUnlocked(true);
+          }
+        } else {
+          cheatPosRef.current = e.code === CHEAT_CODE[0] ? 1 : 0;
+        }
+      } else if (cheatRef.current && stateRef.current?.status === "playing") {
+        const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code);
+        if (digit) {
+          e.preventDefault();
+          invoke("set_level", { level: Number(digit[1]) }).catch(() => {});
+          return;
+        }
+      }
       const binding = KEY_MAP[e.code];
       if (!binding) return;
       e.preventDefault();
@@ -139,7 +179,13 @@ export default function App() {
       <NextPreview state={state} scale={scale} />
       <ScorePanel state={state} scale={scale} />
       <StatsPanel state={state} scale={scale} />
-      <Overlay phase={phase} score={state?.score ?? 0} notice={notice} scale={scale} />
+      <Overlay
+        phase={phase}
+        score={state?.score ?? 0}
+        notice={notice}
+        scale={scale}
+        cheat={cheatUnlocked}
+      />
       {/* Integer-scale toggle (spec 6.4, optional, default off). */}
       <label
         style={{
