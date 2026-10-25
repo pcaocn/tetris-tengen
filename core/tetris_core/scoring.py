@@ -7,6 +7,9 @@ playable; they live here in one place for the owner to replace with
 verified values.
 """
 
+from __future__ import annotations
+
+
 # Immediate points per single clear event, by lines cleared at once
 # (owner-verified from the award table: single 100, double 400,
 # triple 900, tetris 2500).

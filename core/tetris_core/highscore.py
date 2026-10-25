@@ -12,6 +12,9 @@ The TETRIS_HIGHSCORE_PATH environment variable overrides the location
 (used by tests and by the Rust core if needed).
 """
 
+from __future__ import annotations
+
+
 import json
 import os
 from datetime import datetime

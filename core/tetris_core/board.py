@@ -9,6 +9,9 @@ VERIFY (spec 4.1): the exact extended-board height / spawn row convention
 still needs to be checked against the source; HIDDEN_ROWS is the knob.
 """
 
+from __future__ import annotations
+
+
 WIDTH = 10
 VISIBLE_HEIGHT = 20
 HIDDEN_ROWS = 3

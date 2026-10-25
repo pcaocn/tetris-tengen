@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct PythonCore {
     inner: Mutex<Inner>,
@@ -46,9 +46,12 @@ impl PythonCore {
         }
     }
 
-    /// Spawn (or re-spawn) the Python process. Dev builds use the repository
-    /// virtualenv; release packaging is an open item (spec section 13).
-    fn spawn(&self) -> Result<(), String> {
+    /// Spawn (or re-spawn) the Python process. Resolution order (spec
+    /// 2.3, section 13): env overrides; the repository checkout this
+    /// binary was built from (baked in at compile time — dev and
+    /// installed on the build machine); the bundled core source in the
+    /// app resources with the system python3 (installed elsewhere).
+    fn spawn(&self, app: &AppHandle) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|_| "core lock poisoned")?;
         if let Some(mut child) = inner.child.take() {
             let _ = child.kill();
@@ -57,7 +60,7 @@ impl PythonCore {
         inner.stdin = None;
         inner.stdout = None;
         inner.latest_state = None;
-        let (python, core_dir) = resolve_paths(&mut inner);
+        let (python, core_dir) = resolve_paths(app, &mut inner);
         let mut child = Command::new(&python)
             .arg("-m")
             .arg("tetris_core")
@@ -126,25 +129,39 @@ impl Drop for PythonCore {
     }
 }
 
-fn resolve_paths(inner: &mut Inner) -> (PathBuf, PathBuf) {
+fn resolve_paths(app: &AppHandle, inner: &mut Inner) -> (PathBuf, PathBuf) {
     if let (Some(p), Some(d)) = (inner.python.clone(), inner.core_dir.clone()) {
         return (p, d);
     }
-    let core_dir = std::env::var("TETRIS_CORE_DIR")
+    // The repository checkout this binary was built from: baked in at
+    // compile time (env! — a runtime env read is empty in an installed
+    // app, which left the packaged build spinning on "connecting").
+    let repo_core = std::env::var("TETRIS_CORE_DIR")
         .map(PathBuf::from)
-        .or_else(|_| {
-            std::env::var("CARGO_MANIFEST_DIR")
-                .map(|m| PathBuf::from(m).join("../../core"))
-        })
-        .unwrap_or_else(|_| PathBuf::from("../core"));
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../core"));
+    // The core source bundled into the app resources (installs on
+    // machines without the repository).
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .filter(|r| r.join("tetris_core").exists());
+    let venv_python = repo_core.join(".venv/bin/python");
+    let core_dir = if repo_core.join("tetris_core").exists() {
+        repo_core
+    } else if let Some(b) = bundled {
+        // Resources/tetris_core is the package; run from its parent.
+        b
+    } else {
+        repo_core
+    };
     let python = match std::env::var("TETRIS_PYTHON") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
-            let venv = core_dir.join(".venv/bin/python");
-            if venv.exists() {
-                venv
+            if venv_python.exists() {
+                venv_python
             } else {
-                PathBuf::from("python3")
+                PathBuf::from("/usr/bin/python3")
             }
         }
     };
@@ -155,7 +172,7 @@ fn resolve_paths(inner: &mut Inner) -> (PathBuf, PathBuf) {
 
 fn supervise(app: AppHandle, core: Arc<PythonCore>) {
     loop {
-        if let Err(message) = core.spawn() {
+        if let Err(message) = core.spawn(&app) {
             core.supervising.store(false, Ordering::Relaxed);
             let _ = app.emit(
                 "core-event",

@@ -1,5 +1,8 @@
 """Game state machine and 60 Hz frame update (Tengen rules, spec 4)."""
 
+from __future__ import annotations
+
+
 from enum import Enum
 
 from . import highscore

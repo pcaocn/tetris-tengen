@@ -78,6 +78,12 @@ cd app
 npm run tauri build
 ```
 
+The installed app runs the Python core from the repository checkout it
+was built from (its virtualenv), and also bundles a copy of the core
+source in the app resources with a `/usr/bin/python3` fallback — so it
+works on machines without the repo (Python 3.9+, which ships with the
+Xcode Command Line Tools).
+
 ## How to play
 
 Press **Enter** on the title screen (the cathedral scene with the

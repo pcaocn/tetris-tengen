@@ -10,6 +10,9 @@ no release actions, and Python-side DAS cannot work without them. This
 implementation adds `left_off` and `right_off` actions.
 """
 
+from __future__ import annotations
+
+
 import json
 
 from .board import HIDDEN_ROWS

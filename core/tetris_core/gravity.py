@@ -9,6 +9,9 @@ than jumping to a fixed speed. The exact curve is TBD; the constants below
 are a PLACEHOLDER pending a documented source.
 """
 
+from __future__ import annotations
+
+
 # Frames per row by level. Index = level. Beyond the table, the last value.
 FALL_SPEEDS = (50, 42, 35, 29, 24, 19, 15, 12, 9, 6, 5, 4, 3, 2)
 

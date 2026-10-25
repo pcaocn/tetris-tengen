@@ -6,6 +6,9 @@ a PLACEHOLDER: a uniform choice among the seven pieces with repeats
 allowed, seedable so tests are deterministic (open item).
 """
 
+from __future__ import annotations
+
+
 import random
 
 from .pieces import Piece

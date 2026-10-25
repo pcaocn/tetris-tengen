@@ -1,5 +1,8 @@
 """Per-piece spawn counters shown in the stats panel (spec 4.9)."""
 
+from __future__ import annotations
+
+
 from .pieces import Piece
 
 # Panel display order measured from the owner's captures: the in-game stats

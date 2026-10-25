@@ -6,6 +6,9 @@ remainder of each frame. stdout is reserved for protocol messages; logs go
 to stderr only.
 """
 
+from __future__ import annotations
+
+
 import json
 import logging
 import queue

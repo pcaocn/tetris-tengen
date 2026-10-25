@@ -15,6 +15,9 @@ Every state must be checked against the cited source; see
 tests/test_pieces.py which records this table as a fixture.
 """
 
+from __future__ import annotations
+
+
 from enum import IntEnum
 
 

@@ -88,6 +88,7 @@ Rules:
 - Exposes Tauri commands that forward to Python: `send_input(action)`, `new_game(level)`, `pause()`, `get_state()`.
 - Keeps the latest state in memory and emits a `game-state` event to the UI for each `state` message.
 - Does not interpret game data.
+- Core resolution (fixed 2026-10-25; the packaged app previously spun on "connecting" because `CARGO_MANIFEST_DIR` was read at runtime, which is empty in an installed app): `TETRIS_CORE_DIR`/`TETRIS_PYTHON` env overrides; else the repository checkout baked in at compile time (`env!("CARGO_MANIFEST_DIR")/../../core`, using its `.venv/bin/python` — dev and installs on the build machine); else the core source bundled into the app resources (`bundle.resources` maps `core/tetris_core` to `Resources/tetris_core`) run with `/usr/bin/python3` (the core uses `from __future__ import annotations`, so Python 3.9+ works).
 
 ### 2.4 React UI
 

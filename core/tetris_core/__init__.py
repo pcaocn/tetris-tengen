@@ -5,4 +5,7 @@ No UI or OS dependencies; communicates via the JSON-line protocol
 in `protocol.py` and the 60 Hz loop in `__main__.py`.
 """
 
+from __future__ import annotations
+
+
 __version__ = "0.1.0"
