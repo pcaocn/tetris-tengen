@@ -17,3 +17,7 @@ class PieceRNG:
 
     def next_piece(self) -> Piece:
         return Piece(self._rng.randint(1, 7))
+
+    def hole_column(self) -> int:
+        """Random column for a handicap row's gap (title-screen handicap)."""
+        return self._rng.randint(0, 9)

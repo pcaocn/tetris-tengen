@@ -8,39 +8,9 @@ import {
   TITLE_GOLD,
   TITLE_GREEN,
   TITLE_PROMPT_SIZE,
-  TITLE_TEXT_SIZE,
 } from "../theme";
 import { drawSaintBasilsScene } from "./cathedral";
 import { logicalCanvas } from "./draw";
-
-// Introduction theme (owner request 2026-10-25): plays on the title
-// screen only, looping; unmounting stops it.
-import introUrl from "../../../music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg?url";
-
-const MUSIC_VOLUME = 0.6;
-
-function TitleMusic() {
-  const ref = useRef<HTMLAudioElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.volume = MUSIC_VOLUME;
-    el.play().catch(() => {});
-    // WKWebView can block autoplay until the first user gesture; start
-    // playback on the first key press or click if still paused.
-    const kick = () => {
-      if (el.paused) el.play().catch(() => {});
-    };
-    window.addEventListener("keydown", kick);
-    window.addEventListener("pointerdown", kick);
-    return () => {
-      window.removeEventListener("keydown", kick);
-      window.removeEventListener("pointerdown", kick);
-      el.pause();
-    };
-  }, []);
-  return <audio ref={ref} src={introUrl} loop preload="auto" />;
-}
 
 const SCENE_W = 1960;
 const SCENE_H = 1476;
@@ -97,11 +67,10 @@ function Logo({ scale }: { scale: number }) {
   );
 }
 
-// Title screen (spec 5, owner request 2026-10-24): the composition follows
-// png/screenshot_00.png — gold border bands with green diamond studs, a
-// full-screen light-blue double frame, the red italic TETRIS wordmark, the
-// Saint Basil's Cathedral scene (from the owner's reference render), and
-// two gold text lines (the second blinks as the start prompt).
+// Title screen (owner request 2026-10-25, refined the same day): the
+// cathedral scene, the red italic TETRIS wordmark, and a blinking PRESS
+// ENTER prompt. The introduction theme (01) plays; all menus moved to
+// the options page reached with Enter.
 export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }) {
   const bandHeight = 48 * scale;
   const diamonds = [];
@@ -139,7 +108,6 @@ export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }
     >
       {band}
       <div style={{ position: "relative", flex: 1 }}>
-        <TitleMusic />
         <div
           style={{ position: "absolute", inset: `${24 * scale}px`, background: FRAME_DARK }}
         />
@@ -159,23 +127,6 @@ export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }
         />
         <SceneArt scale={scale} cheat={cheat} />
         <Logo scale={scale} />
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            bottom: 120 * scale,
-            textAlign: "center",
-            fontFamily: FONT_SMOOTH,
-            fontWeight: 700,
-            fontSize: TITLE_TEXT_SIZE * scale,
-            color: TITLE_GOLD,
-            letterSpacing: 6 * scale,
-            textShadow: `${2 * scale}px ${2 * scale}px 0 rgba(0, 0, 0, 0.25)`,
-          }}
-        >
-          TENGEN-STYLE TRIBUTE
-        </div>
         <div
           className="blink"
           style={{

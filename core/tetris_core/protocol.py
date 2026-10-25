@@ -56,7 +56,15 @@ class Core:
             level = msg.get("level", 0)
             if isinstance(level, bool) or not isinstance(level, int):
                 raise ValueError("level must be an integer")
-            self.game.new_game(level)
+            music = msg.get("music")
+            if music is not None and not isinstance(music, str):
+                raise ValueError("music must be a string")
+            handicap = msg.get("handicap", 0)
+            if isinstance(handicap, bool) or not isinstance(handicap, int):
+                raise ValueError("handicap must be an integer")
+            if not 0 <= handicap <= 12:
+                raise ValueError("handicap must be 0..12")
+            self.game.new_game(level, music, handicap)
         elif cmd == "set_level":
             level = msg.get("level")
             if isinstance(level, bool) or not isinstance(level, int):
@@ -65,6 +73,12 @@ class Core:
                 raise ValueError("level must be 0..9")
             if not self.game.set_level(level):
                 raise ValueError("cannot change level while not playing")
+        elif cmd == "set_music":
+            music = msg.get("music")
+            if music is not None and not isinstance(music, str):
+                raise ValueError("music must be a string")
+            if not self.game.set_music(music):
+                raise ValueError("cannot change music while not playing")
         elif cmd == "pause":
             self.game.pause()
         elif cmd == "get_state":
@@ -100,5 +114,11 @@ class Core:
             "high_score": g.high_score,
             "stats": g.stats.as_dict(),
             "status": g.status.value,
+            "lock_count": g.lock_count,
+            "clear_count": g.clear_count,
+            "top_scores": g.top_scores,
+            "top_run": g.top_run,
+            "music_track": g.music,
+            "music_phase": g.music_phase,
             "color_index": locked_color_index(g.level),
         }

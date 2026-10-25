@@ -7,7 +7,15 @@ import sys
 import pytest
 
 from tetris_core.board import HIDDEN_ROWS
-from tetris_core.game import SPAWN_X, SPAWN_Y, Status, lock_delay_frames
+from tetris_core.game import (
+    CLEAR_ANIM_FRAMES,
+    SPAWN_X,
+    SPAWN_Y,
+    Status,
+    lock_delay_frames,
+)
+from tetris_core.scoring import BONUS_BLOCK_LINES
+from tetris_core import highscore
 from tetris_core.highscore import load as load_highscore
 from tetris_core.highscore import save as save_highscore
 from tetris_core.pieces import Piece
@@ -311,3 +319,221 @@ def test_stdio_loop_scripted_commands(tmp_path):
     final_state = [e for e in events if e["type"] == "state"][-1]
     assert final_state["status"] == "playing"
     assert all(len(row) == 10 for row in final_state["board"])
+
+
+# ----------------------------------------------------------------------
+# Music flow (owner request 2026-10-25): end-of-stage celebration with
+# music phases 06/07, milestone 09, game over 08, selected track echo.
+# ----------------------------------------------------------------------
+
+
+def complete_one_line(game):
+    """Locks an I to complete the bottom row and runs the clear wipe."""
+    for x in (0, 1, 2, 3, 8, 9):
+        game.board.lock_cells([(x, 22)], 6)
+    game._piece_x = 4
+    game._piece_y = 22
+    game._lock()
+
+
+def test_music_selection_echoes_in_state_events(tmp_path):
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    core.handle_line('{"cmd": "new_game", "level": 0, "music": "03"}')
+    state = core.state_event()
+    assert state["music_track"] == "03"
+    assert state["music_phase"] == "gameplay"
+    assert core.handle_line('{"cmd": "new_game", "level": 0, "music": 7}')[0]["ok"] is False
+
+
+def test_level_complete_celebration_then_resume(tmp_path):
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    game = core.game
+    game.lines = BONUS_BLOCK_LINES - 1  # clearing one line finishes level 0
+    complete_one_line(game)
+    # The wipe runs first; the celebration starts when it finishes.
+    assert game.status is Status.PLAYING
+    assert game.music_phase == "gameplay"
+    for _ in range(CLEAR_ANIM_FRAMES):
+        game.update()
+    assert game.status is Status.LEVEL_COMPLETE
+    assert game.music_phase == "level_complete"
+    assert game.level == 1
+    assert game.piece_kind is None  # spawn deferred until Enter
+    # Movement inputs are ignored during the celebration.
+    game.handle_input("left")
+    assert game.status is Status.LEVEL_COMPLETE
+    # Enter (the pause command) resumes: play continues, music returns to
+    # the gameplay phase, and the deferred piece spawns.
+    core.handle_line('{"cmd": "pause"}')
+    assert game.status is Status.PLAYING
+    assert game.piece_kind is Piece.O
+    assert game.music_phase == "gameplay"
+
+
+def test_milestone_celebration_every_tenth_level(tmp_path):
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    game = core.game
+    # Completing level 9 (lines 299 -> 300) bumps the level to 10.
+    game.lines = BONUS_BLOCK_LINES * 10 - 1
+    complete_one_line(game)
+    for _ in range(CLEAR_ANIM_FRAMES):
+        game.update()
+    assert game.status is Status.LEVEL_COMPLETE
+    assert game.level == 10
+    assert game.music_phase == "milestone"
+
+
+def test_clear_count_drives_row_clear_sound(tmp_path):
+    # Row-clear sound (owner request 2026-10-25): one bump per clear
+    # event, regardless of how many rows cleared at once.
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    game = core.game
+    assert core.state_event()["clear_count"] == 0
+    for x in (0, 1, 2, 3, 8, 9):
+        game.board.lock_cells([(x, 22)], 6)
+    game._piece_x = 4
+    game._piece_y = 22
+    game._lock()
+    assert game.clear_count == 1
+    assert core.state_event()["clear_count"] == 1
+
+
+def test_lock_count_drives_landing_pop(tmp_path):
+    # Landing pop (owner request 2026-10-25): every lock bumps the
+    # counter carried in the state event; the UI plays a synthesized
+    # brick-thud on each increment.
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    game = core.game
+    assert core.state_event()["lock_count"] == 0
+    game.handle_input("soft_drop_on")
+    for _ in range(300):
+        game.update()
+        if game.piece_kind is Piece.O:
+            break
+    assert game.lock_count == 1
+    assert core.state_event()["lock_count"] == 1
+    for _ in range(300):
+        game.update()
+        if game.piece_kind is None or game.lock_count == 2:
+            break
+    assert game.lock_count == 2
+
+
+def test_handicap_rows_are_unfinished(tmp_path):
+    # Handicap (owner request 2026-10-25): the chosen number of bottom
+    # rows start filled except for one random hole each.
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    replies = core.handle_line(
+        '{"cmd": "new_game", "level": 0, "music": null, "handicap": 3}'
+    )
+    assert replies[0]["ok"] is True
+    board = replies[1]["board"]
+    for row in board[-3:]:
+        assert row.count(0) == 1
+        assert sum(1 for v in row if v > 0) == 9
+    assert all(v == 0 for row in board[:-3] for v in row)
+    assert core.game.status is Status.PLAYING
+    # Rows are not full, so nothing clears; holes can differ per row
+    # (FixedRNG cycles holes 0, 3, 6 here).
+    assert board[-1].index(0) in (0, 3, 6)
+
+
+def test_handicap_validation(tmp_path):
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    assert core.handle_line('{"cmd": "new_game", "level": 0, "handicap": 13}')[0]["ok"] is False
+    assert core.handle_line('{"cmd": "new_game", "level": 0, "handicap": -1}')[0]["ok"] is False
+    assert core.handle_line('{"cmd": "new_game", "level": 0, "handicap": "six"}')[0]["ok"] is False
+    assert core.handle_line('{"cmd": "new_game", "level": 0, "handicap": 12}')[0]["ok"] is True
+
+
+def test_cheat_set_music_cycles_during_play(tmp_path):
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    # Changing the gameplay music mid-game (the UI's backquote cheat key).
+    replies = core.handle_line('{"cmd": "set_music", "music": "04"}')
+    assert replies[0]["ok"] is True
+    assert replies[1]["music_track"] == "04"
+    assert replies[1]["music_phase"] == "gameplay"
+    # Non-string ids are rejected.
+    assert core.handle_line('{"cmd": "set_music", "music": 4}')[0]["ok"] is False
+    # Not while the game is paused.
+    core.handle_line('{"cmd": "pause"}')
+    assert core.handle_line('{"cmd": "set_music", "music": "05"}')[0]["ok"] is False
+
+
+def test_game_over_reports_music_phase(tmp_path):
+    core = make_core(tmp_path, [Piece.T, Piece.L])
+    game = core.game
+    game.score = 5
+    # Pre-fill the top-5 table so a score of 5 cannot qualify.
+    for s in (500, 400, 300, 200, 100):
+        highscore.add(s, tmp_path / "highscore.json")
+    # Block the spawn cells so the next piece cannot appear.
+    holes = {(0, y) for y in range(HIDDEN_ROWS, 23)} | set(game.piece_cells())
+    for y in range(HIDDEN_ROWS + 1, 23):
+        for x in range(10):
+            if (x, y) not in holes:
+                game.board.lock_cells([(x, y)], 6)
+    game.handle_input("soft_drop_on")
+    for _ in range(300):
+        game.update()
+        if game.status is Status.GAME_OVER:
+            break
+    assert game.status is Status.GAME_OVER
+    assert game.music_phase == "game_over"
+    # Below the table's worst entry: no fireworks (owner rule 2026-10-25).
+    assert game.top_run is False
+    assert core.state_event()["top_run"] is False
+
+
+def test_top5_table_game_over_fireworks(tmp_path):
+    from tetris_core.highscore import add as add_highscore
+
+    path = tmp_path / "highscore.json"
+    # Pre-fill the table with 5 scores; the worst is 100.
+    for s in (500, 400, 300, 200, 100):
+        add_highscore(s, path)
+    core = make_core(tmp_path, [Piece.T, Piece.L])
+    game = core.game
+    # A score better than the worst enters the table; a worse one does not.
+    game.score = 250
+    assert highscore.qualifies(250, path) is True
+    assert highscore.qualifies(50, path) is False
+    table = highscore.add(250, path)
+    assert [e["score"] for e in table] == [500, 400, 300, 250, 200]
+    assert table[3]["at"] != ""
+
+    # End a fresh game with a top-5 score: top_run reports for the
+    # fireworks screen and the state event carries the table.
+    core2 = Core(highscore_path=path, rng=FixedRNG([Piece.T, Piece.L]))
+    game2 = core2.game
+    game2.score = 350
+    holes = {(0, y) for y in range(HIDDEN_ROWS, 23)} | set(game2.piece_cells())
+    for y in range(HIDDEN_ROWS + 1, 23):
+        for x in range(10):
+            if (x, y) not in holes:
+                game2.board.lock_cells([(x, y)], 6)
+    game2.handle_input("soft_drop_on")
+    for _ in range(300):
+        game2.update()
+        if game2.status is Status.GAME_OVER:
+            break
+    assert game2.status is Status.GAME_OVER
+    assert game2.top_run is True
+    state = core2.state_event()
+    assert state["top_run"] is True
+    assert [e["score"] for e in state["top_scores"]] == [500, 400, 350, 300, 250]
+    assert state["high_score"] == 500
+    # A new game resets the flag but keeps the table.
+    game2.new_game(0)
+    assert game2.top_run is False
+    assert game2.top_scores[0]["score"] == 500
+
+
+def test_top5_table_migration_from_single_score(tmp_path):
+    import json as json_mod
+
+    path = tmp_path / "highscore.json"
+    path.write_text(json_mod.dumps({"high_score": 777}))
+    table = highscore.load_table(path)
+    assert table == [{"score": 777, "at": ""}]
+    assert highscore.load(path) == 777

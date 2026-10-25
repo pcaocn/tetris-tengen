@@ -202,8 +202,18 @@ fn send_input(core: State<'_, Arc<PythonCore>>, action: String) -> Result<(), St
 }
 
 #[tauri::command]
-fn new_game(core: State<'_, Arc<PythonCore>>, level: Option<i64>) -> Result<(), String> {
-    core.send_command(json!({ "cmd": "new_game", "level": level.unwrap_or(0) }))
+fn new_game(
+    core: State<'_, Arc<PythonCore>>,
+    level: Option<i64>,
+    music: Option<String>,
+    handicap: Option<i64>,
+) -> Result<(), String> {
+    core.send_command(json!({
+        "cmd": "new_game",
+        "level": level.unwrap_or(0),
+        "music": music,
+        "handicap": handicap.unwrap_or(0)
+    }))
 }
 
 #[tauri::command]
@@ -216,6 +226,12 @@ fn pause(core: State<'_, Arc<PythonCore>>) -> Result<(), String> {
 #[tauri::command]
 fn set_level(core: State<'_, Arc<PythonCore>>, level: Option<i64>) -> Result<(), String> {
     core.send_command(json!({ "cmd": "set_level", "level": level.unwrap_or(0) }))
+}
+
+// Cheat: cycle the gameplay music mid-game (owner request 2026-10-25).
+#[tauri::command]
+fn set_music(core: State<'_, Arc<PythonCore>>, music: Option<String>) -> Result<(), String> {
+    core.send_command(json!({ "cmd": "set_music", "music": music }))
 }
 
 #[tauri::command]
@@ -238,6 +254,7 @@ fn main() {
             send_input,
             new_game,
             set_level,
+            set_music,
             pause,
             get_state,
             start_core

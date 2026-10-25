@@ -16,7 +16,13 @@ export interface GameState {
   level: number;
   high_score: number;
   stats: Record<string, number>;
-  status: "playing" | "paused" | "game_over";
+  status: "playing" | "paused" | "level_complete" | "game_over";
+  lock_count: number;
+  clear_count: number;
+  top_scores: { score: number; at: string }[];
+  top_run: boolean;
+  music_track: string | null;
+  music_phase: "gameplay" | "level_complete" | "milestone" | "game_over";
   color_index: number;
 }
 

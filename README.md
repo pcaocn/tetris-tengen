@@ -28,8 +28,17 @@ sprites or artwork from the original game are used; music files in
 - **Stats panel**: per-piece spawn counts as vertical bars, aligned to
   equal height, with ticks every 10 pieces.
 - **Classic cheat code** on the title screen (see How to play).
-- **Music**: the introduction theme loops on the title screen (more
-  tracks to come in `music/`).
+- **Sound**: the original block-drop thud, line-clear sweep, and menu
+  select ticks (from the owner's sound files), plus looping firework
+  rockets when a run makes the top 5 — all alongside the music.
+- **Top-5 high-score table** with record date/time, persisted and shown
+  on qualifying game overs.
+- **Original app icon**: four beveled blocks in the piece palette
+  (`tools/icon.py` + `npx tauri icon`).
+- **Music**: the introduction theme on the title screen, four selectable
+  gameplay themes (Loginska, Bradinsky, Kalinka, Troika — previewed from
+  the title menu, or Silent), end-of-stage and victory celebrations, and
+  a game-over theme.
 - **High-score persistence**, pause, and a 60 Hz game loop driven by the
   Python core — the UI renders state and never computes game rules.
 
@@ -71,7 +80,12 @@ npm run tauri build
 
 ## How to play
 
-Press **Enter** on the title screen to start a marathon game.
+Press **Enter** on the title screen (the cathedral scene with the
+introduction theme) to open the **options page** — the cathedral dimmed
+in the background: the left menu selects the gameplay music (Silent by
+default, previewed as you browse) and the right menu the handicap —
+0, 3, 6, 9, or 12 unfinished garbage rows. Press **Enter** again to
+start.
 
 | Key | Action |
 | --- | --- |
@@ -79,13 +93,18 @@ Press **Enter** on the title screen to start a marathon game.
 | Down arrow | Soft drop |
 | Z | Rotate counter-clockwise |
 | X | Rotate clockwise |
-| Enter | Start / Pause |
+| Up / Down arrow (options) | Move within the focused menu |
+| Left / Right arrow (options) | Switch menu focus |
+| Enter | Title → options → start / Pause |
+| ` (backquote, cheat only) | Next gameplay theme |
 
 Scoring, per line-clear event: **SINGLE 100 · DOUBLE 400 · TRIPLE 900 ·
 TETRIS 2500**, shown as a label inside the cleared rows while they wipe
 from the center outward. The locked-cell color changes with the level
 and repeats every 10 levels. The stats bars fill slowly — one bar is full
-at 120 pieces of a kind (roughly level 10).
+at 120 pieces of a kind (roughly level 10). Clearing a 30-line stage
+freezes the game for the end-of-stage celebration; press **Enter** to
+continue to the next level.
 
 ### Cheat mode
 

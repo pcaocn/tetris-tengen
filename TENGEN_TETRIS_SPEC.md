@@ -200,15 +200,22 @@ tengen-tetris/
 ### 4.10 High score
 
 - Stored as JSON in the macOS application support folder, for example `~/Library/Application Support/tengen-tetris/highscore.json`. Created on first save.
+- Owner decision 2026-10-25: the file keeps a **top-5 table** of `{"score", "at"}` records (ISO timestamp), sorted by score descending; the old single-score format is migrated on first load. On game over, a score that would enter the table is inserted, persisted, and reported (`top_scores`, `top_run` in the state event) — see the game-over fireworks screen in section 5. Scores of 0 never qualify; with an under-filled table any positive score qualifies.
 
 ---
 
 ## 5. Screens
 
-- **Start / title screen** (owner request 2026-10-24): the composition follows `png/screenshot_00.png` — gold border bands with green diamond studs top and bottom, a full-screen light-blue double frame, a red italic `TETRIS` wordmark, and the **Saint Basil's Cathedral scene** filling the frame, adapted from the owner's reference render `png/Saint_Basil's_Cathedral_render.ts` (`cathedral.ts`: pale sky with sun, stone platform, terracotta walls with white arcade, onion domes — gold, blue/green spiral-striped, red checkered — each with an Orthodox cross, and the central tent tower with gold lattice). Two gold text lines near the bottom ("TENGEN-STYLE TRIBUTE" and a blinking "PRESS ENTER"). An original composition; no original artwork or text is copied (spec 1 non-goals).
+- **Start / title screen** (owner request 2026-10-24, refined 2026-10-25): the composition follows `png/screenshot_00.png` — gold border bands with green diamond studs top and bottom, a full-screen light-blue double frame, a red italic `TETRIS` wordmark, the Saint Basil's Cathedral scene (adapted from the owner's reference render `png/Saint_Basil's_Cathedral_render.ts`: pale sky with sun, stone platform, terracotta walls with white arcade, onion domes with Orthodox crosses, central tent tower with gold lattice — `cathedral.ts`), and a blinking `PRESS ENTER` with the introduction theme (01) looping. No menus on the title (owner decision 2026-10-25).
+- **Options page** (owner request 2026-10-25, refined the same day): reached from the title with Enter, with the cathedral drawn dimmed as the background and no background music. The left column lists the gameplay music — **Silent (first, default)**, Introduction (01), Loginska (02), Bradinsky (03), Kalinka (04), Troika (05) — each previewed as the selection lands on it; the right column lists the handicap levels **0, 3, 6, 9, 12** as a full menu. Up/Down move within the focused column, Left/Right switch focus, Enter starts the game with the selections (`new_game` carries the track id and handicap; the state event reports `music_track` and `music_phase`). Pausing the game also pauses the music; it resumes in place on unpause. The cheat sequence's arrow presses net out to no menu movement on this page.
 - **Pause:** freezes the frame loop and shows PAUSE over the playfield.
-- **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again.
-- **Title music** (owner request 2026-10-25): `music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg` loops on the title screen only (imported via Vite `?url`, volume 0.6); it stops when the game starts. More tracks (gameplay themes) will be added to `music/` later. The owner supplies and tracks the music files by decision (spec 1 non-goals cover artwork, not the owner's own music files).
+- **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again. Owner addition 2026-10-25: if the run's score enters the **top 5**, the game-over screen instead shows the top-5 records (rank, date/time, score) and plays the four firework rockets (`music/tetris_firework1..4.mp3`) in a loop until Enter restarts.
+- **Title music** (owner request 2026-10-25): `music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg` loops on the title screen and the options page until a music option is previewed. The owner supplies and tracks the music files by decision (spec 1 non-goals cover artwork, not the owner's own music files).
+- **End-of-stage celebration** (owner request 2026-10-25): clearing a 30-line block freezes the game in the new `level_complete` status — 06 (End of Stage) plays once and chains into 07 (Katyusha) as the celebration; Enter stops it, resumes play, and the selected theme returns. Clearing level 9/19/29... (the new level is a multiple of 10) plays 09 (Victory) instead, looping until Enter (`music_phase: "milestone"`). Game over plays 08 once (`music_phase: "game_over"`).
+- **Cheat music change** (owner request 2026-10-25): with the Konami cheat active, the backquote key cycles the gameplay music mid-game (Introduction → Loginska → Bradinsky → Kalinka → Troika) via the `set_music` protocol command; normally the music is fixed during play.
+- **Landing pop & row-clear sound** (owner request 2026-10-25): every piece lock bumps `lock_count` and every clear event bumps `clear_count` in the state event; the UI plays the owner's exact original samples — `music/tetris_block_drop.mp3` and `music/tetris_line_clear.mp3` — on each increment.
+- **Menu select sounds** (owner request 2026-10-25): `music/tetris_select1.mp3` plays when a menu selection moves down, `music/tetris_select2.mp3` when it moves up (both title-screen menus on the options page).
+- **Handicap** (owner request 2026-10-25): the options page offers **0, 3, 6, 9, 12** unfinished rows. The chosen count of bottom rows starts filled with exactly one random hole each (`new_game` carries the handicap; `PieceRNG.hole_column` picks the gap).
 
 Exact text, positions, and timing: **TBD**, from the owner's reference captures.
 
@@ -262,6 +269,10 @@ Measurements (playfield offset, cell size, panel sizes): **TBD**. Capture the Te
 - **Text:** render text at the device pixel size. Use a font that stays crisp at non-integer scales. The pixel font from section 6.3 can look uneven when scaled, so test it at several window sizes and pick a font size that stays clean. If it looks wrong, switch to a smooth font and note the change.
 - **Optional integer-scale mode:** provide a setting that snaps the scale factor to a whole number, for a chunkier retro look. Default: off.
 - **Performance:** redraw only when the state changes or the window resizes. Keep the board drawing to one pass per frame.
+
+### 6.5 App icon (owner request 2026-10-25)
+
+- Four vector-style blocks in a 2×2 arrangement — red (I), blue (O), gold (J), green (S) — with the game's three-tone bevel look (light top+right, dark left+bottom, black outline) on a black field. Generated by `tools/icon.py` into `assets/icon-source.png` (1024px), and the full platform set is derived with `npx tauri icon` into `app/src-tauri/icons/` (referenced from `tauri.conf.json`).
 
 ## 7. Keyboard controls
 

@@ -3,7 +3,7 @@
 from enum import Enum
 
 from . import highscore
-from .board import Board, HIDDEN_ROWS
+from .board import HEIGHT, Board, HIDDEN_ROWS
 from .gravity import frames_per_row, soft_drop_fpr
 from .pieces import Piece, ROTATIONS
 from .rng import PieceRNG
@@ -63,6 +63,7 @@ LOCKED_COLOR_INDICES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 class Status(Enum):
     PLAYING = "playing"
     PAUSED = "paused"
+    LEVEL_COMPLETE = "level_complete"
     GAME_OVER = "game_over"
 
 
@@ -77,6 +78,8 @@ class Game:
         self._highscore_path = highscore_path
         self._rng = rng if rng is not None else PieceRNG()
         self.high_score = highscore.load(highscore_path)
+        self.top_scores = highscore.load_table(highscore_path)
+        self.top_run = False
         self.frame = 0
         self.new_game(0)
 
@@ -84,10 +87,27 @@ class Game:
     # Commands (protocol layer calls these)
     # ------------------------------------------------------------------
 
-    def new_game(self, level: int = 0) -> None:
+    def new_game(
+        self,
+        level: int = 0,
+        music: str | None = None,
+        handicap: int = 0,
+    ) -> None:
         if level < 0:
             level = 0
+        self.music = music
         self.board = Board()
+        # Handicap rows (owner request 2026-10-25): unfinished garbage
+        # rows at the bottom of the playfield — each with one random
+        # hole — chosen on the title screen (0/3/6/9/12).
+        if handicap > 0:
+            handicap = min(handicap, HEIGHT - 1)
+            for i in range(handicap):
+                row = HEIGHT - 1 - i
+                hole = self._rng.hole_column()
+                self.board.lock_cells(
+                    [(x, row) for x in range(10) if x != hole], int(Piece.I)
+                )
         self.score = 0
         self.lines = 0
         self._start_level = level
@@ -107,14 +127,33 @@ class Game:
         self._das_repeating = False
         self._clearing_rows: list[int] | None = None
         self._clearing_frame = 0
+        self._celebrate = False
+        self.top_run = False
+        self.lock_count = 0
+        self.clear_count = 0
         self.next_piece: Piece = self._rng.next_piece()
         self._spawn_next()
+
+    def set_music(self, music: str | None) -> bool:
+        """Cheat (owner request 2026-10-25): change the gameplay music
+        mid-game (the UI cycles tracks with the backquote key while the
+        Konami cheat is active)."""
+        if self.status is not Status.PLAYING:
+            return False
+        self.music = music
+        return True
 
     def pause(self) -> None:
         if self.status is Status.PLAYING:
             self.status = Status.PAUSED
         elif self.status is Status.PAUSED:
             self.status = Status.PLAYING
+        elif self.status is Status.LEVEL_COMPLETE:
+            # Enter during the end-of-stage celebration (owner request
+            # 2026-10-25): stop it and continue play; the next piece
+            # spawns now (it was deferred by the celebration).
+            self.status = Status.PLAYING
+            self._spawn_next()
 
     def handle_input(self, action: str) -> None:
         if self.status is not Status.PLAYING:
@@ -157,7 +196,14 @@ class Game:
             if self._clearing_frame >= CLEAR_ANIM_FRAMES:
                 self.board.clear_rows(self._clearing_rows)
                 self._clearing_rows = None
-                self._spawn_next()
+                if self._celebrate:
+                    # End of stage (owner request 2026-10-25): freeze for
+                    # the celebration music (06/09 in the UI); Enter
+                    # resumes and the deferred spawn happens then.
+                    self._celebrate = False
+                    self.status = Status.LEVEL_COMPLETE
+                else:
+                    self._spawn_next()
             return True
         changed = self._handle_das()
         if self._can_move(0, 1):
@@ -204,6 +250,19 @@ class Game:
         if self._clearing_rows is None:
             return None
         return (self._clearing_rows, self._clearing_frame)
+
+    @property
+    def music_phase(self) -> str:
+        """Which music the UI should play (owner request 2026-10-25):
+        "gameplay" (the selected track), "level_complete" (06, then 07 as
+        the celebration), "milestone" (09, when a level 9/19/29... was
+        cleared, i.e. the new level is a multiple of 10), or "game_over"
+        (08)."""
+        if self.status is Status.LEVEL_COMPLETE:
+            return "milestone" if self.level % 10 == 0 else "level_complete"
+        if self.status is Status.GAME_OVER:
+            return "game_over"
+        return "gameplay"
 
     def piece_cells(self) -> list[tuple[int, int]]:
         """Absolute (x, y) cells of the current piece on the board."""
@@ -296,12 +355,20 @@ class Game:
     def _lock(self) -> None:
         if self._piece_kind is None:
             return
+        # Landing pop (owner request 2026-10-25): every lock bumps the
+        # counter; the state event carries it and the UI plays a
+        # synthesized brick-thud on each increment.
+        self.lock_count += 1
         self.board.lock_cells(self.piece_cells(), int(self._piece_kind))
         self._piece_kind = None
         rows = self.board.full_rows()
         if not rows:
             self._spawn_next()
             return
+        # Row-clear sound (owner request 2026-10-25): one counter bump
+        # per clear event (1-4 rows); the UI plays a dismantle "poo-ch"
+        # on each increment.
+        self.clear_count += 1
         # Lines completed (spec 4.5): score, lines, and level update
         # immediately; the rows dissolve in place for CLEAR_ANIM_FRAMES
         # before being removed and the next piece spawns.
@@ -310,7 +377,10 @@ class Game:
         self.score += points_for_clear(len(rows))
         self.score += BLOCK_BONUS_POINTS * block_bonuses(lines_before, self.lines)
         new_level = level_for_lines(self._start_level, self.lines)
-        if new_level != self.level:
+        if new_level > self.level:
+            self._celebrate = True
+            self.level = new_level
+        elif new_level < self.level:
             self.level = new_level
         self._clearing_rows = rows
         self._clearing_frame = 0
@@ -326,11 +396,15 @@ class Game:
         self._soft_held = 0
         self._rest_frames = 0
         if not self.board.cells_free(self.piece_cells()):
-            # Game over: the new piece cannot spawn (spec 4.8).
+            # Game over: the new piece cannot spawn (spec 4.8). Top-5
+            # runs enter the table and set top_run for the fireworks
+            # screen (owner request 2026-10-25).
             self._piece_kind = None
             self.status = Status.GAME_OVER
-            if self.score > self.high_score:
-                self.high_score = self.score
-                highscore.save(self.high_score, self._highscore_path)
+            self.high_score = max(self.high_score, self.score)
+            self.top_run = highscore.qualifies(self.score, self._highscore_path)
+            if self.top_run:
+                self.top_scores = highscore.add(self.score, self._highscore_path)
+                self.high_score = max(self.high_score, self.top_scores[0]["score"])
             return
         self.stats.increment(kind)
