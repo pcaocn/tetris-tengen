@@ -286,13 +286,21 @@ export default function App() {
     wantSrc = gameOverMusicUrl;
     wantLoop = false;
   } else {
+    // Gameplay playlist (owner request 2026-10-25): start from the
+    // selected theme, then loop through all of them; Silent stays
+    // silent. Advance happens on each track's `ended` event.
     wantSrc = track ? GAMEPLAY_TRACKS[track] ?? null : null;
+    wantLoop = false;
   }
 
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
     chainRef.current = wantChain;
+    // Playlist advances only during gameplay with a selected theme
+    // (owner request 2026-10-25); celebrations and game over don't.
+    playlistActiveRef.current =
+      started && musicPhase === "gameplay" && wantSrc !== null;
     // The music pauses with the game and resumes in place (owner request
     // 2026-10-25).
     if (paused) {
@@ -315,6 +323,7 @@ export default function App() {
       }
       el.src = wantSrc;
       el.loop = wantLoop;
+      playlistPosRef.current = track;
       el.play()
         .then(() => {
           needsGestureRef.current = false;
@@ -326,7 +335,7 @@ export default function App() {
     } else if (el.loop !== wantLoop) {
       el.loop = wantLoop;
     }
-  }, [wantSrc, wantLoop, wantChain, paused]);
+  }, [wantSrc, wantLoop, wantChain, paused, started, musicPhase, track]);
 
   useEffect(() => {
     const kick = () => {
@@ -347,6 +356,11 @@ export default function App() {
     };
   }, []);
 
+  // Gameplay playlist (owner request 2026-10-25): which track is playing
+  // and whether the playlist should keep advancing.
+  const playlistPosRef = useRef<string | null>(null);
+  const playlistActiveRef = useRef(false);
+
   const onMusicEnded = () => {
     const el = audioRef.current;
     const next = chainRef.current;
@@ -354,6 +368,17 @@ export default function App() {
     if (el && next) {
       el.src = next.src;
       el.loop = next.loop;
+      el.play().catch(() => {});
+      return;
+    }
+    // Advance the gameplay playlist: after the selected theme, loop
+    // through all the others.
+    if (el && playlistActiveRef.current) {
+      const idx = playlistPosRef.current ? MUSIC_CYCLE.indexOf(playlistPosRef.current) : -1;
+      const nextId = MUSIC_CYCLE[(idx + 1) % MUSIC_CYCLE.length];
+      playlistPosRef.current = nextId;
+      el.src = GAMEPLAY_TRACKS[nextId];
+      el.loop = false;
       el.play().catch(() => {});
     }
   };
