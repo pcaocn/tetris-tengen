@@ -9,7 +9,7 @@ import {
 import { drawSaintBasilsScene } from "./cathedral";
 import { logicalCanvas } from "./draw";
 
-const MUSIC_MENU = ["Silent", "Introduction", "Loginska", "Bradinsky", "Kalinka", "Troika"];
+const MUSIC_MENU = ["Silent", "Loginska", "Bradinsky", "Kalinka", "Troika"];
 const HANDICAP_LEVELS = [0, 3, 6, 9, 12];
 
 // The cathedral scene drawn dimmed as the options page background

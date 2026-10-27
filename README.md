@@ -35,9 +35,10 @@ sprites or artwork from the original game are used; music files in
   on qualifying game overs.
 - **Original app icon**: four beveled blocks in the piece palette
   (`tools/icon.py` + `npx tauri icon`).
-- **Music**: the introduction theme on the title screen, five selectable
-  gameplay themes (Silent by default) that play as a looped playlist
-  during play, end-of-stage and victory celebrations, and a game-over
+- **Music**: the introduction theme on the intro page only, four
+  selectable gameplay themes (Loginska, Bradinsky, Kalinka, Troika;
+  Silent by default) that play as a looped playlist during play,
+  end-of-stage and victory celebrations, and a game-over
   theme.
 - **High-score persistence**, pause, and a 60 Hz game loop driven by the
   Python core — the UI renders state and never computes game rules.

@@ -5,11 +5,11 @@ import {
   FONT_SMOOTH,
   LAYOUT,
   PANEL_BG,
+  STATS_BAR_FILL,
   STATS_BAR_MAX,
   STATS_ORDER,
   STATS_TICK_EVERY,
   TEXT_BRIGHT,
-  type BlockTrio,
 } from "../theme";
 import type { GameState } from "../hooks/useGameState";
 import { drawBlock, logicalCanvas } from "./draw";
@@ -65,7 +65,7 @@ export function StatsPanel({
           left: 0,
           width: "100%",
           height: 2 * scale,
-          background: "rgba(0, 0, 0, 0.35)",
+          background: "rgba(255, 255, 255, 0.35)",
         }}
       />,
     );
@@ -101,21 +101,33 @@ export function StatsPanel({
         {KINDS.map((kind) => {
           const count = stats[kind] ?? 0;
           const fill = Math.min(count, STATS_BAR_MAX) / STATS_BAR_MAX;
-          const trio: BlockTrio | undefined = FALLING_COLORS[kind];
           // Fixed-height glyph area under every bar so all bars align at
-          // the same height regardless of piece shape (owner 2026-10-24).
+          // the same height regardless of piece shape (owner 2026-10-24),
+          // and a fixed column width so the pitch between the bars is
+          // even — the pieces have different widths (I is one square
+          // wide), so the trimmed glyph canvases alone would not space
+          // evenly (owner 2026-10-27).
           const glyphBox = (4 * cell + 8) * scale;
+          const colWidth = (3 * cell + 8) * scale;
           return (
             <div
               key={kind}
-              style={{ display: "flex", flexDirection: "column", alignItems: "center" }}
+              style={{
+                width: colWidth,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+              }}
             >
               <div
                 style={{
                   position: "relative",
                   width: barWidth * scale,
                   height: barHeight * scale,
-                  background: PANEL_BG,
+                  // Black track, no boundary line; all bars share one
+                  // yellowish fill between the T and J colors (owner
+                  // correction 2026-10-27, closest to the original).
+                  background: "#000000",
                   overflow: "hidden",
                 }}
               >
@@ -126,7 +138,7 @@ export function StatsPanel({
                     bottom: 0,
                     width: "100%",
                     height: `${fill * 100}%`,
-                    background: trio?.mid,
+                    background: STATS_BAR_FILL,
                   }}
                 />
                 {ticks}

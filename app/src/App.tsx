@@ -59,15 +59,17 @@ const FIREWORK_SEQUENCE = ["fw1", "fw2", "fw3", "fw4"];
 const SFX_GAINS: Record<string, number> = { drop: 3.0 };
 
 const GAMEPLAY_TRACKS: Record<string, string> = {
-  "01": introUrl,
   "02": loginskaUrl,
   "03": bradinskyUrl,
   "04": kalinkaUrl,
   "05": troikaUrl,
 };
-const MUSIC_CYCLE = ["01", "02", "03", "04", "05"];
-const MUSIC_MENU = ["Silent", "Introduction", "Loginska", "Bradinsky", "Kalinka", "Troika"];
-const MUSIC_IDS: (string | null)[] = [null, "01", "02", "03", "04", "05"];
+// Introduction (01) plays on the intro page only — it is not selectable
+// and not part of the gameplay loop (owner correction 2026-10-27,
+// matching the original game).
+const MUSIC_CYCLE = ["02", "03", "04", "05"];
+const MUSIC_MENU = ["Silent", "Loginska", "Bradinsky", "Kalinka", "Troika"];
+const MUSIC_IDS: (string | null)[] = [null, "02", "03", "04", "05"];
 // Handicap rows (owner request 2026-10-25): unfinished garbage rows.
 const HANDICAP_LEVELS = [0, 3, 6, 9, 12];
 
@@ -308,22 +310,63 @@ export default function App() {
         el.pause();
         gamePausedRef.current = true;
       }
+      prevPhaseRef.current = musicPhase;
       return;
     }
     if (gamePausedRef.current) {
       gamePausedRef.current = false;
       if (el.src) el.play().catch(() => {});
     }
+    const returning =
+      prevPhaseRef.current === "level_complete" ||
+      prevPhaseRef.current === "milestone";
+    if (returning && wantSrc !== null && playlistSavedRef.current) {
+      // Back from the celebration: continue the theme that was playing
+      // right before the level ended, at its position (owner request
+      // 2026-10-27), instead of restarting the selection.
+      const saved = playlistSavedRef.current;
+      playlistSavedRef.current = null;
+      const url = GAMEPLAY_TRACKS[saved.id];
+      if (url) {
+        playlistPosRef.current = saved.id;
+        wantedSrcRef.current = url;
+        el.src = url;
+        el.loop = wantLoop;
+        const onLoaded = () => {
+          el.currentTime = Math.max(0, Math.min(saved.time, el.duration || saved.time));
+          el.removeEventListener("loadedmetadata", onLoaded);
+        };
+        el.addEventListener("loadedmetadata", onLoaded);
+        el.play()
+          .then(() => {
+            needsGestureRef.current = false;
+          })
+          .catch(() => {
+            needsGestureRef.current = true;
+          });
+        prevPhaseRef.current = musicPhase;
+        return;
+      }
+    }
     if (wantSrc !== wantedSrcRef.current) {
+      // Leaving gameplay: save the playlist position so the next level
+      // continues where the music left off (owner request 2026-10-27).
+      if (started && prevPhaseRef.current === "gameplay" && playlistPosRef.current) {
+        playlistSavedRef.current = { id: playlistPosRef.current, time: el.currentTime };
+      }
       wantedSrcRef.current = wantSrc;
       if (wantSrc === null) {
         el.pause();
         el.removeAttribute("src");
+        prevPhaseRef.current = musicPhase;
         return;
       }
       el.src = wantSrc;
       el.loop = wantLoop;
-      playlistPosRef.current = track;
+      if (started && musicPhase === "gameplay") {
+        playlistPosRef.current = track;
+        playlistSavedRef.current = null;
+      }
       el.play()
         .then(() => {
           needsGestureRef.current = false;
@@ -335,6 +378,7 @@ export default function App() {
     } else if (el.loop !== wantLoop) {
       el.loop = wantLoop;
     }
+    prevPhaseRef.current = musicPhase;
   }, [wantSrc, wantLoop, wantChain, paused, started, musicPhase, track]);
 
   useEffect(() => {
@@ -357,9 +401,13 @@ export default function App() {
   }, []);
 
   // Gameplay playlist (owner request 2026-10-25): which track is playing
-  // and whether the playlist should keep advancing.
+  // and whether the playlist should keep advancing. SavedPos keeps the
+  // track + position so the music continues where it left off after an
+  // end-of-stage celebration (owner request 2026-10-27).
   const playlistPosRef = useRef<string | null>(null);
   const playlistActiveRef = useRef(false);
+  const playlistSavedRef = useRef<{ id: string; time: number } | null>(null);
+  const prevPhaseRef = useRef<string>("gameplay");
 
   const onMusicEnded = () => {
     const el = audioRef.current;

@@ -18,17 +18,21 @@ export const LAYOUT = {
   playfield: { x: 144, y: 120, cols: 10, rows: 20, cell: 84, frameOuter: 12, frameInner: 8 },
   next: { x: 1120, y: 176, boxW: 400, boxH: 224, cell: 56, labelSize: 40 },
   score: { x: 1120, y: 480, rowHeight: 136, labelSize: 40, valueSize: 52 },
-  stats: { x: 1120, y: 1104, titleSize: 48, cell: 28, barWidth: 28, barHeight: 560, gap: 6 },
+  stats: { x: 1120, y: 1104, titleSize: 48, cell: 16, barWidth: 28, barHeight: 560, gap: 6 },
 };
 
 // Stats bars (spec 4.9, owner decisions 2026-10-24/25): one vertical bar
 // per piece, growing upward from the glyph, all tracks at the same
 // height. Each piece's weight is scaled so the bar fills slowly: full at
-// 120 pieces of one kind, which lands around level 10 (10x slower than
-// the previous draft of 12, per the 30-lines-per-level progression).
+// 120 pieces of one kind (about when the player reaches level 10).
 // A horizontal tick marks every 10 pieces.
 export const STATS_BAR_MAX = 120;
 export const STATS_TICK_EVERY = 10;
+
+// Stats bar fill (owner correction 2026-10-27, closest to the original):
+// one yellowish color for every bar, between the T and J shape colors;
+// black track with no boundary line, tight even pitch.
+export const STATS_BAR_FILL = "#b49b36";
 
 // Line-clear wipe (spec 4.5, owner decision 2026-10-24): cleared rows are
 // wiped from the center outward, one column-pair every this many frames
