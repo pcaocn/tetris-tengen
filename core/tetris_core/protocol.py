@@ -82,6 +82,13 @@ class Core:
                 raise ValueError("music must be a string")
             if not self.game.set_music(music):
                 raise ValueError("cannot change music while not playing")
+        elif cmd == "set_autopilot":
+            if "mode" not in msg:
+                raise ValueError("mode is required")
+            mode = msg["mode"]
+            if mode is not None and mode not in ("quick", "highscore"):
+                raise ValueError('mode must be "quick", "highscore", or null')
+            self.game.set_autopilot(mode)
         elif cmd == "pause":
             self.game.pause()
         elif cmd == "get_state":
@@ -121,6 +128,7 @@ class Core:
             "clear_count": g.clear_count,
             "top_scores": g.top_scores,
             "top_run": g.top_run,
+            "autopilot": g.autopilot,
             "music_track": g.music,
             "music_phase": g.music_phase,
             "color_index": locked_color_index(g.level),

@@ -21,6 +21,7 @@ export interface GameState {
   clear_count: number;
   top_scores: { score: number; at: string }[];
   top_run: boolean;
+  autopilot: "quick" | "highscore" | null;
   music_track: string | null;
   music_phase: "gameplay" | "level_complete" | "milestone" | "game_over";
   color_index: number;

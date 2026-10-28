@@ -33,6 +33,13 @@ sprites or artwork from the original game are used; music files in
   rockets when a run makes the top 5 — all alongside the music.
 - **Top-5 high-score table** with record date/time, persisted and shown
   on qualifying game overs.
+- **Autopilot (cheat)**: with the Konami code active, two strategies —
+  **End** plays #1 (clear lines as fast as possible) and **Home** plays
+  #2 (maximize score: defer small clears, keep a well, and hunt
+  triples and tetrises). Pure calculation at human input speed: a
+  seeded benchmark cleared ~4,900 lines with 95 tetrises and 234
+  points per line (vs 3 tetrises and 149 for #1). It plays but never
+  presses Enter, so the end-of-stage breaks still wait for you.
 - **Original app icon**: four beveled blocks in the piece palette
   (`tools/icon.py` + `npx tauri icon`).
 - **Music**: the introduction theme on the intro page only, four
@@ -104,6 +111,8 @@ start.
 | Left / Right arrow (options) | Switch menu focus |
 | Enter | Title → options → start / Pause |
 | ` (backquote, cheat only) | Next gameplay theme |
+| Home (cheat only) | Autopilot: high-score strategy |
+| End (cheat only) | Autopilot: quick-clear strategy |
 
 Scoring, per line-clear event: **SINGLE 100 · DOUBLE 400 · TRIPLE 900 ·
 TETRIS 2500**, shown as a label inside the cleared rows while they wipe
@@ -119,7 +128,11 @@ On the title screen, type the classic Konami code with the arrow keys
 and letters — **Up Up Down Down Left Right Left Right B A**. The
 cathedral's central tip dome turns green to confirm. While playing,
 press **0–9** to jump to that level instantly (gravity and stack color
-change immediately).
+change immediately). Press **End** for the autopilot's quick-clear
+strategy or **Home** for the high-score strategy; either key turns it
+off. The autopilot plays at human input speed (an AUTO label shows
+above the playfield) but never presses Enter, so end-of-stage breaks
+still wait for you.
 
 ## Development
 

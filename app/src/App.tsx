@@ -232,6 +232,22 @@ export default function App() {
           invoke("set_music", { music: next }).catch(() => {});
           return;
         }
+        if (e.code === "Home") {
+          // Cheat (owner request 2026-10-28): autopilot #2 — maximize
+          // score by deferring small clears for triples and tetrises.
+          e.preventDefault();
+          const next =
+            stateRef.current?.autopilot === "highscore" ? null : "highscore";
+          invoke("set_autopilot", { mode: next }).catch(() => {});
+          return;
+        }
+        if (e.code === "End") {
+          // Autopilot #1 — clear lines as quickly as possible.
+          e.preventDefault();
+          const next = stateRef.current?.autopilot === "quick" ? null : "quick";
+          invoke("set_autopilot", { mode: next }).catch(() => {});
+          return;
+        }
       }
       const binding = KEY_MAP[e.code];
       if (!binding) return;
@@ -543,6 +559,26 @@ export default function App() {
       style={{ width: areaWidth, height: areaHeight, background: BACKGROUND }}
     >
       <Board state={state} scale={scale} />
+      {/* Autopilot indicator (owner request 2026-10-27/28): a label bar
+          above the playfield showing the active strategy. */}
+      {state?.autopilot && state?.status !== "game_over" && (
+        <div
+          style={{
+            position: "absolute",
+            left: LAYOUT.playfield.x * scale,
+            top: (LAYOUT.playfield.y - 56) * scale,
+            fontFamily: FONT_SMOOTH,
+            fontWeight: 700,
+            color: TEXT_BRIGHT,
+            background: PANEL_BG,
+            padding: `0 ${12 * scale}px`,
+            fontSize: 36 * scale,
+            lineHeight: `${36 * 1.6 * scale}px`,
+          }}
+        >
+          {state.autopilot === "highscore" ? "AUTO - HIGH SCORE" : "AUTO - QUICK CLEAR LINES"}
+        </div>
+      )}
       <audio ref={audioRef} onEnded={onMusicEnded} preload="auto" />
       {/* "NEXT" label above the preview box, as in the captures (spec 6.1). */}
       <div

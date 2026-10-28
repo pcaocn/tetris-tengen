@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from . import autopilot
 from . import highscore
 from .board import HEIGHT, Board, HIDDEN_ROWS
 from .gravity import frames_per_row, soft_drop_fpr
@@ -83,6 +84,9 @@ class Game:
         self.high_score = highscore.load(highscore_path)
         self.top_scores = highscore.load_table(highscore_path)
         self.top_run = False
+        self.autopilot: str | None = None  # None | "quick" | "highscore"
+        self._autopilot_plan: tuple[int, int] | None = None
+        self._autopilot_abandoned = False
         self.frame = 0
         self.new_game(0)
 
@@ -146,6 +150,21 @@ class Game:
         self.music = music
         return True
 
+    def set_autopilot(self, mode: str | None) -> None:
+        """Cheat autopilot control (owner request 2026-10-27, strategies
+        2026-10-28): with the Konami cheat active, the UI drives this —
+        Home selects "highscore", End selects "quick", either key turns
+        it off. While on, the autopilot picks and executes placements at
+        human input speed; human movement inputs are ignored. The
+        end-of-stage celebration is never skipped — the autopilot only
+        plays, it does not press Enter. The mode persists across games."""
+        self.autopilot = mode
+        self._autopilot_plan = None
+        self._autopilot_abandoned = False
+        if mode is None:
+            # The autopilot held soft drop; hand back a clean key state.
+            self._soft_drop = False
+
     def pause(self) -> None:
         if self.status is Status.PLAYING:
             self.status = Status.PAUSED
@@ -160,6 +179,10 @@ class Game:
 
     def handle_input(self, action: str) -> None:
         if self.status is not Status.PLAYING:
+            return
+        if self.autopilot:
+            # The autopilot owns the piece while it drives (owner
+            # request 2026-10-27); human movement inputs are ignored.
             return
         if action == "left":
             self._start_das(-1)
@@ -209,6 +232,12 @@ class Game:
                     self._spawn_next()
             return True
         changed = self._handle_das()
+        if self.autopilot and self._piece_kind is not None:
+            # Autopilot (owner request 2026-10-27, throttled 2026-10-28):
+            # drive the piece toward the planned placement at human
+            # input speed; the gravity, lock-delay, and clear machinery
+            # below run unchanged underneath it.
+            changed |= self._autopilot_step()
         if self._can_move(0, 1):
             # Airborne: the rest window is cancelled (spec 4.4). Gravity
             # moves the piece down one row when its counter expires; a
@@ -283,6 +312,45 @@ class Game:
     def _can_move(self, dx: int, dy: int) -> bool:
         cells = [(x + dx, y + dy) for x, y in self.piece_cells()]
         return self.board.cells_free(cells)
+
+    def _autopilot_step(self) -> bool:
+        """Autopilot step (owner request 2026-10-27, throttled
+        2026-10-28): drive the piece toward the planned (rotation,
+        column) at human input speed — never faster than a player holding
+        Down and tapping X. One rotation or one lateral step per frame
+        (the discrete key-press rate), descending at soft-drop speed via
+        the normal gravity machinery (the Down-key rate). The plan is
+        computed once per piece; if the way is blocked or no legal
+        placement exists, the piece is abandoned to fall naturally."""
+        assert self._piece_kind is not None  # caller checked
+        # Descend at soft-drop speed (the fastest a player can drop).
+        self._soft_drop = True
+        if self._autopilot_abandoned:
+            return False
+        if self._autopilot_plan is None:
+            self._autopilot_plan = autopilot.best_placement(
+                self.board, self._piece_kind, self.autopilot or "quick"
+            )
+        if self._autopilot_plan is None:
+            return False  # stack at the ceiling; let it fall
+        rot, x = self._autopilot_plan
+        # One rotation per frame toward the target (the X-key rate);
+        # the rotation takes the shortest direction, other way if
+        # blocked.
+        if self._rot != rot:
+            direction = 1 if (rot - self._rot) % 4 <= 2 else -1
+            if self._try_rotate(direction) or self._try_rotate(-direction):
+                return True
+            self._autopilot_abandoned = True
+            return False
+        # One lateral step per frame (the arrow key-mash rate).
+        if self._piece_x != x:
+            dx = 1 if x > self._piece_x else -1
+            if self._move(dx):
+                return True
+            self._autopilot_abandoned = True
+            return False
+        return False
 
     def _move(self, dx: int) -> bool:
         if self._piece_kind is None:
@@ -398,6 +466,8 @@ class Game:
         self._gravity_counter = 0
         self._soft_held = 0
         self._rest_frames = 0
+        self._autopilot_plan = None  # replan for the new piece
+        self._autopilot_abandoned = False
         if not self.board.cells_free(self.piece_cells()):
             # Game over: the new piece cannot spawn (spec 4.8). Top-5
             # runs enter the table and set top_run for the fireworks

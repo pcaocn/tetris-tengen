@@ -68,7 +68,7 @@ Actions for `input`: `left`, `right`, `soft_drop_on`, `soft_drop_off`, `rotate_c
 Events from Python to Rust, forwarded to the UI:
 
 ```json
-{"type": "state", "frame": 1234, "board": [[0,0,...], ...], "current": {"kind": "T", "cells": [[x,y],...]}, "next": "L", "score": 0, "lines": 0, "level": 0, "high_score": 0, "stats": {"T": 0, "J": 0, "Z": 0, "O": 0, "S": 0, "L": 0, "I": 0}, "status": "playing", "color_index": 3}
+{"type": "state", "frame": 1234, "board": [[0,0,...], ...], "current": {"kind": "T", "cells": [[x,y],...]}, "next": "L", "score": 0, "lines": 0, "level": 0, "high_score": 0, "stats": {"T": 0, "J": 0, "Z": 0, "O": 0, "S": 0, "L": 0, "I": 0}, "status": "playing", "autopilot": false, "color_index": 3}
 {"type": "response", "id": 12, "ok": true}
 {"type": "response", "id": 12, "ok": false, "error": "message"}
 {"type": "log", "level": "error", "message": "..."}
@@ -85,7 +85,7 @@ Rules:
 ### 2.3 Rust process
 
 - Spawns the Python process at startup and restarts it if it exits.
-- Exposes Tauri commands that forward to Python: `send_input(action)`, `new_game(level)`, `pause()`, `get_state()`.
+- Exposes Tauri commands that forward to Python: `send_input(action)`, `new_game(level, music, handicap)`, `pause()`, `get_state()`, and the cheat commands `set_level`, `set_music`, `set_autopilot`.
 - Keeps the latest state in memory and emits a `game-state` event to the UI for each `state` message.
 - Does not interpret game data.
 - Core resolution (fixed 2026-10-25; the packaged app previously spun on "connecting" because `CARGO_MANIFEST_DIR` was read at runtime, which is empty in an installed app): `TETRIS_CORE_DIR`/`TETRIS_PYTHON` env overrides; else the repository checkout baked in at compile time (`env!("CARGO_MANIFEST_DIR")/../../core`, using its `.venv/bin/python` — dev and installs on the build machine); else the core source bundled into the app resources (`bundle.resources` maps `core/tetris_core` to `Resources/tetris_core`) run with `/usr/bin/python3` (the core uses `from __future__ import annotations`, so Python 3.9+ works).
@@ -176,7 +176,7 @@ tengen-tetris/
 - Line-clear animation (owner decisions 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and are wiped **from the center to both sides** — one column-pair every 4 frames (pairs {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; `WIPE_FRAMES_PER_PAIR` in `theme.ts`) — then the rows are removed and the next piece spawns after `CLEAR_ANIM_FRAMES` (24). While the wipe runs, the award label **SINGLE / DOUBLE / TRIPLE / TETRIS** (by number of rows) shows centered **inside the cleared row(s)** (`CLEAR_LABELS`). The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the wipe and the label.
 - Tengen awards line-clear bonuses only after each 30 lines. **VERIFY** this against the source, including what happens to lines cleared that are not part of a bonus block.
 - Level progression: **VERIFY** how the level advances (for example, every 10 lines, or as Tengen defines it). Do not assume the Nintendo rule.
-- Cheat (owner request 2026-10-25): typing the classic Konami sequence on the title screen — **↑ ↑ ↓ ↓ ← → ← → B A**, physical keys — unlocks cheat mode. The indicator is the cathedral itself: the central tent tower's tip dome turns **green** on the title screen. During play, digit keys **0-9** jump to that level immediately via the `set_level` protocol command: gravity and the locked color change at once, and progression continues from the new level (`Game.set_level`; UI tracking in `App.tsx`).
+- Cheat (owner request 2026-10-25): typing the classic Konami sequence on the title screen — **↑ ↑ ↓ ↓ ← → ← → B A**, physical keys — unlocks cheat mode. The indicator is the cathedral itself: the central tent tower's tip dome turns **green** on the title screen. During play, digit keys **0-9** jump to that level immediately via the `set_level` protocol command: gravity and the locked color change at once, and progression continues from the new level (`Game.set_level`; UI tracking in `App.tsx`). Owner addition 2026-10-27: the **Home** key toggles the AI autopilot (section 4.11), and the backquote key cycles the gameplay music — both only while the cheat is active.
 - Score cap: **TBD**. Confirm from the source.
 
 ### 4.6 Piece generator (RNG)
@@ -203,6 +203,16 @@ tengen-tetris/
 
 - Stored as JSON in the macOS application support folder, for example `~/Library/Application Support/tengen-tetris/highscore.json`. Created on first save.
 - Owner decision 2026-10-25: the file keeps a **top-5 table** of `{"score", "at"}` records (ISO timestamp), sorted by score descending; the old single-score format is migrated on first load. On game over, a score that would enter the table is inserted, persisted, and reported (`top_scores`, `top_run` in the state event) — see the game-over fireworks screen in section 5. Scores of 0 never qualify; with an under-filled table any positive score qualifies.
+
+### 4.11 Autopilot (cheat; owner request 2026-10-27, throttled and given two strategies 2026-10-28)
+
+- With the Konami cheat active, **End** selects strategy #1 and **Home** selects strategy #2; either key turns the autopilot off again, and switching keys switches strategies. Outside cheat mode neither key does anything. The mode persists across games. The UI shows `AUTO - QUICK CLEAR LINES` or `AUTO - HIGH SCORE` above the playfield while it drives.
+- The placement search (`core/tetris_core/autopilot.py`) enumerates every landing for the current piece, simulates the lock and line clears, and scores the result with published **El-Tetris** feature weights — landing height, cleared rows, row/column transitions, holes, well sums (one-piece lookahead). Pure functions; no game rules live there. Named "autopilot", not "AI": it is pure calculation.
+- **#1 "quick"** (End): clear lines as quickly as possible — the classic linear scoring; a single is as good as part of a tetris.
+- **#2 "highscore"** (Home): maximize score (owner request 2026-10-28) — defer 1-2 line clears while the stack is low and clean (a `defer_w` cost; holes or a tall stack waive it — survival first), score clears by their point value (a tetris is worth 25x a single), keep a well column (relaxed well weight) for I-piece tetrises, and let the stack build freely up to a knee before the landing-height cost rises.
+- Execution (`Game._autopilot_step`) is throttled to **human input speed** (owner correction 2026-10-28: "auto mode, not god mode"): one rotation or one lateral step per frame — the discrete key-press rate of tapping X or the arrows — while the piece descends at soft-drop speed through the normal gravity machinery (the Down-key rate). The plan is computed once per piece; a blocked step (or no legal placement at all) abandons the piece to fall naturally.
+- While the autopilot drives, human movement inputs are ignored; Enter (pause) still works. **The end-of-stage celebration is never skipped** — the autopilot plays but never presses Enter, so the game waits for the owner after every 30-line stage.
+- Protocol: `set_autopilot` command (`{"cmd": "set_autopilot", "mode": "quick" | "highscore" | null}`); the state event reports `"autopilot"`. Seeded benchmark (~111 min window, seed 42): quick cleared 4,328 lines (3 tetrises, 149 pts/line); highscore cleared 4,881 lines (95 tetrises, 234 pts/line) and was still playing.
 
 ---
 
@@ -287,6 +297,8 @@ Measurements (playfield offset, cell size, panel sizes): **TBD**. Capture the Te
 | Z | rotate counterclockwise |
 | X | rotate clockwise |
 | Enter | Start / Pause |
+| Home (cheat only) | autopilot #2: high-score strategy (section 4.11) |
+| End (cheat only) | autopilot #1: quick-clear strategy (section 4.11) |
 
 Keep the key map as a single table in `app/src/controls.ts`.
 

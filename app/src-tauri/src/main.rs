@@ -251,6 +251,17 @@ fn set_music(core: State<'_, Arc<PythonCore>>, music: Option<String>) -> Result<
     core.send_command(json!({ "cmd": "set_music", "music": music }))
 }
 
+// Cheat: control the autopilot (owner request 2026-10-27; the UI gates
+// this behind the Konami code — Home = highscore, End = quick, off via
+// either key).
+#[tauri::command]
+fn set_autopilot(
+    core: State<'_, Arc<PythonCore>>,
+    mode: Option<String>,
+) -> Result<(), String> {
+    core.send_command(json!({ "cmd": "set_autopilot", "mode": mode }))
+}
+
 #[tauri::command]
 fn get_state(core: State<'_, Arc<PythonCore>>) -> Result<Option<Value>, String> {
     core.send_command(json!({ "cmd": "get_state" }))?;
@@ -272,6 +283,7 @@ fn main() {
             new_game,
             set_level,
             set_music,
+            set_autopilot,
             pause,
             get_state,
             start_core
