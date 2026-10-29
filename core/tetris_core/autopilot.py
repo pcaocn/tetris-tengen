@@ -48,8 +48,8 @@ _HIGHSCORE = {
     "points_w": 1.0,  # clears score by points: 1/4/9/25 per 100 pts
     "defer_w": 25.0,  # cost of burning a 1-2 line clear while safe
     "safe_h": 10,  # above this height, survival beats deferral
-    "well_w": -1.5,  # relaxed: the strategy keeps a well column
-    "holes_w": -10.0,  # buried wells are catastrophic: extra caution
+    "well_w": -2.0,  # relaxed, but roofing a well must never pay
+    "holes_w": -12.0,  # buried wells are catastrophic: extra caution
 }
 STRATEGIES = {"quick": _QUICK, "highscore": _HIGHSCORE}
 
