@@ -77,13 +77,14 @@ export function Overlay({
       content = <div style={text(56)}>PAUSE</div>;
       break;
     case "level_complete":
-      // End-of-stage celebration (owner request 2026-10-25): 06 chains
-      // into 07 (or 09 for milestone levels); Enter continues.
+      // End-of-stage celebration (owner request 2026-10-29): the
+      // celebration track plays once and the next level starts by
+      // itself; Enter skips ahead for the impatient.
       content = (
         <div style={text(48)}>
           STAGE CLEAR
           <br />
-          <span className="blink">PRESS ENTER</span>
+          <span className="blink">NEXT LEVEL...</span>
         </div>
       );
       break;

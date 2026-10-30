@@ -53,6 +53,14 @@ def lock_delay_frames(level: int) -> int:
 # only renders the flicker (owner request 2026-10-24).
 CLEAR_ANIM_FRAMES = 24
 
+# End-of-stage celebration (spec 5, owner request 2026-10-29): clearing a
+# 30-line block freezes the game for the celebration track (06 End of
+# Stage, or 09 Victory on milestone levels), then the next level starts
+# by itself -- no Enter needed. The window is long enough for either
+# track to play once (06 is 2.48 s, 09 is 3.24 s); Enter still skips
+# ahead for the impatient.
+CELEBRATE_FRAMES = 210
+
 # Locked-piece color index per level (spec 6.2): UNVERIFIED PLACEHOLDER
 # table; the owner must supply the per-level indices sampled from Tengen
 # captures (open item). The UI maps the index to a hex color in theme.ts.
@@ -135,6 +143,7 @@ class Game:
         self._clearing_rows: list[int] | None = None
         self._clearing_frame = 0
         self._celebrate = False
+        self._celebrate_frames = 0
         self.top_run = False
         self.lock_count = 0
         self.clear_count = 0
@@ -156,8 +165,10 @@ class Game:
         Home selects "highscore", End selects "quick", either key turns
         it off. While on, the autopilot picks and executes placements at
         human input speed; human movement inputs are ignored. The
-        end-of-stage celebration is never skipped — the autopilot only
-        plays, it does not press Enter. The mode persists across games."""
+        end-of-stage celebration is never cut short — the autopilot only
+        plays, it does not press Enter, so the celebration runs its full
+        window and the next level starts by itself (owner request
+        2026-10-29). The mode persists across games."""
         self.autopilot = mode
         self._autopilot_plan = None
         self._autopilot_abandoned = False
@@ -174,8 +185,13 @@ class Game:
             # Enter during the end-of-stage celebration (owner request
             # 2026-10-25): stop it and continue play; the next piece
             # spawns now (it was deferred by the celebration).
-            self.status = Status.PLAYING
-            self._spawn_next()
+            self._resume_after_celebration()
+
+    def _resume_after_celebration(self) -> None:
+        """Leave the end-of-stage celebration and start the next level."""
+        self.status = Status.PLAYING
+        self._celebrate_frames = 0
+        self._spawn_next()
 
     def handle_input(self, action: str) -> None:
         if self.status is not Status.PLAYING:
@@ -212,6 +228,14 @@ class Game:
 
     def update(self) -> bool:
         """Advance one frame. Returns True if observable state changed."""
+        if self.status is Status.LEVEL_COMPLETE:
+            # End-of-stage celebration (owner request 2026-10-29): the
+            # celebration track plays once, then the next level starts
+            # automatically.
+            self._celebrate_frames += 1
+            if self._celebrate_frames >= CELEBRATE_FRAMES:
+                self._resume_after_celebration()
+            return True
         if self.status is not Status.PLAYING:
             return False
         self.frame += 1
@@ -223,11 +247,13 @@ class Game:
                 self.board.clear_rows(self._clearing_rows)
                 self._clearing_rows = None
                 if self._celebrate:
-                    # End of stage (owner request 2026-10-25): freeze for
-                    # the celebration music (06/09 in the UI); Enter
-                    # resumes and the deferred spawn happens then.
+                    # End of stage (owner request 2026-10-25/29): freeze
+                    # for the celebration music (06/09 in the UI); the
+                    # next level starts by itself when the track is done
+                    # (Enter skips ahead).
                     self._celebrate = False
                     self.status = Status.LEVEL_COMPLETE
+                    self._celebrate_frames = 0
                 else:
                     self._spawn_next()
             return True
@@ -286,10 +312,9 @@ class Game:
     @property
     def music_phase(self) -> str:
         """Which music the UI should play (owner request 2026-10-25):
-        "gameplay" (the selected track), "level_complete" (06, then 07 as
-        the celebration), "milestone" (09, when a level 9/19/29... was
-        cleared, i.e. the new level is a multiple of 10), or "game_over"
-        (08)."""
+        "gameplay" (the selected track), "level_complete" (06, played
+        once), "milestone" (09, when a level 9/19/29... was cleared, i.e.
+        the new level is a multiple of 10), or "game_over" (08)."""
         if self.status is Status.LEVEL_COMPLETE:
             return "milestone" if self.level % 10 == 0 else "level_complete"
         if self.status is Status.GAME_OVER:

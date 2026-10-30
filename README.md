@@ -38,8 +38,16 @@ sprites or artwork from the original game are used; music files in
   #2 (maximize score: defer small clears, keep a well, and hunt
   triples and tetrises). Pure calculation at human input speed: a
   seeded benchmark cleared ~4,900 lines with 95 tetrises and 234
-  points per line (vs 3 tetrises and 149 for #1). It plays but never
-  presses Enter, so the end-of-stage breaks still wait for you.
+  points per line (vs 3 tetrises and 149 for #1). The high-score
+  strategy also plays for survival once the board is more than half
+  full — it stops hunting tetrises, keeps the surface flat and clears
+  lines whenever it can, which cut its early deaths from 78/400 to
+  33/400 on held-out seeds. Measured paired (every variant runs on
+  identical seeds), that is 58% fewer early deaths *and* a higher
+  mean score (+27,432, 95% CI [+9,944, +46,468]) — not a trade of
+  one against the other. The remaining score/survival trade sits on
+  the tetris-hunting dial: backing off it (`safe_h` 4) reaches
+  12/400 early deaths for 19% less score.
 - **Original app icon**: four beveled blocks in the piece palette
   (`tools/icon.py` + `npx tauri icon`).
 - **Music**: the introduction theme on the intro page only, four
@@ -131,20 +139,23 @@ press **0–9** to jump to that level instantly (gravity and stack color
 change immediately). Press **End** for the autopilot's quick-clear
 strategy or **Home** for the high-score strategy; either key turns it
 off. The autopilot plays at human input speed (an AUTO label shows
-above the playfield) but never presses Enter, so end-of-stage breaks
-still wait for you.
+above the playfield). End-of-stage breaks play the celebration track
+once and the next level starts by itself — no Enter needed.
 
 ## Development
 
 ```sh
-# Python core tests (182 tests)
+# Python core tests (205 tests)
 cd core && uv run pytest
 
-# Front-end type check and build
-cd app && npm run typecheck && npm run build
+# Front-end type check, music state-machine test, and build
+cd app && npm run typecheck && npm test && npm run build
 
 # Rust shell check
 cd app/src-tauri && cargo check
+
+# Headless autopilot benchmarks (no UI, no pacing)
+cd core && uv run python simulate_autopilot.py --strategy highscore --runs 100
 ```
 
 ### Project layout

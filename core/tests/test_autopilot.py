@@ -2,13 +2,15 @@
 
 The weight-agnostic assertions check properties: every placement is
 legal and lands on the floor; gaps get filled rather than covered; the
-autopilot plays without any input; and the end-of-stage celebration is
-never skipped.
+autopilot plays without any input; and the end-of-stage celebration
+always runs its full window (the autopilot never cuts it short).
 """
 
-from tetris_core.autopilot import best_placement
-from tetris_core.board import HEIGHT, WIDTH, Board, HIDDEN_ROWS
-from tetris_core.game import CLEAR_ANIM_FRAMES, Status
+import pytest
+
+from tetris_core.autopilot import STRATEGIES, _danger, best_placement
+from tetris_core.board import HEIGHT, WIDTH, Board
+from tetris_core.game import CELEBRATE_FRAMES, CLEAR_ANIM_FRAMES, Status
 from tetris_core.pieces import Piece
 
 from helpers import FixedRNG
@@ -146,16 +148,35 @@ def test_autopilot_never_skips_the_celebration(tmp_path):
     for _ in range(CLEAR_ANIM_FRAMES):
         game.update()
     assert game.status is Status.LEVEL_COMPLETE
-    # The owner requirement: autopilot plays but never presses Enter —
-    # the celebration waits indefinitely.
-    for _ in range(600):
+    # The owner requirement: the autopilot plays but never presses Enter,
+    # so it never cuts the celebration short (owner request 2026-10-29:
+    # the celebration now runs its full window and the next level starts
+    # by itself).
+    for _ in range(CELEBRATE_FRAMES - 1):
         game.update()
         assert game.status is Status.LEVEL_COMPLETE
-    # Enter (the pause command) continues; autopilot resumes play.
-    core.handle_line('{"cmd": "pause"}')
+    # The celebration window expires on its own: play resumes.
+    game.update()
     assert game.status is Status.PLAYING
     for _ in range(20):
         game.update()
+
+
+def test_enter_skips_the_celebration(tmp_path):
+    core = Core(highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I]))
+    game = core.game
+    game.lines = 29
+    for x in (0, 1, 2, 3, 8, 9):
+        game.board.lock_cells([(x, HEIGHT - 1)], 1)
+    game._piece_x = 4
+    game._piece_y = HEIGHT - 1
+    game._lock()
+    for _ in range(CLEAR_ANIM_FRAMES):
+        game.update()
+    assert game.status is Status.LEVEL_COMPLETE
+    # Enter (the pause command) continues early, as before.
+    core.handle_line('{"cmd": "pause"}')
+    assert game.status is Status.PLAYING
 
 
 def test_set_autopilot_validation(tmp_path):
@@ -205,3 +226,16 @@ def test_highscore_strategy_takes_a_ready_tetris():
     rot, x = result
     apply_placement(board, Piece.I, rot, x)
     assert len(board.full_rows()) == 4
+
+
+def test_danger_ramp_starts_at_half_full():
+    # Board-fullness awareness (owner request 2026-10-29): the danger
+    # ramp starts when the stack reaches half the board and reaches full
+    # danger six rows later; buried holes only push it up.
+    w = STRATEGIES["highscore"]
+    assert _danger(5, 0, w) == 0.0
+    assert _danger(10, 0, w) == 0.0
+    assert _danger(13, 0, w) == pytest.approx(0.5)
+    assert _danger(16, 0, w) == 1.0
+    assert _danger(16, 4, w) == 1.0
+    assert _danger(8, 0, w) == 0.0

@@ -11,6 +11,18 @@ import {
 } from "./theme";
 import { KEY_MAP } from "./controls";
 import { useGameState } from "./hooks/useGameState";
+import {
+  advancePlaylist,
+  initialAudioState,
+  planMusic,
+  stepAudio,
+  type AudioState,
+} from "./audioPlan";
+import {
+  afterResume,
+  planSfx,
+  type SfxContextState,
+} from "./sfxPlan";
 import type { OverlayPhase } from "./components/Overlay";
 import { Board } from "./components/Board";
 import { NextPreview } from "./components/NextPreview";
@@ -29,7 +41,6 @@ import bradinskyUrl from "../../music/03_-_Tetris_Tengen_-_NES_-_Bradinsky.ogg?u
 import kalinkaUrl from "../../music/04_-_Tetris_Tengen_-_NES_-_Kalinka.ogg?url";
 import troikaUrl from "../../music/05_-_Tetris_Tengen_-_NES_-_Troika.ogg?url";
 import endOfStageUrl from "../../music/06_-_Tetris_Tengen_-_NES_-_End_of_Stage.ogg?url";
-import katyushaUrl from "../../music/07_-_Tetris_Tengen_-_NES_-_Katyusha.ogg?url";
 import gameOverMusicUrl from "../../music/08_-_Tetris_Tengen_-_NES_-_Game_Over.ogg?url";
 import victoryUrl from "../../music/09_-_Tetris_Tengen_-_NES_-_Victory.ogg?url";
 // Sound effects (owner request 2026-10-25): the exact original drop,
@@ -63,6 +74,12 @@ const GAMEPLAY_TRACKS: Record<string, string> = {
   "03": bradinskyUrl,
   "04": kalinkaUrl,
   "05": troikaUrl,
+};
+// Every playable theme, including the introduction (01), keyed by the
+// music id the core reports.
+const THEME_URLS: Record<string, string> = {
+  "01": introUrl,
+  ...GAMEPLAY_TRACKS,
 };
 // Introduction (01) plays on the intro page only — it is not selectable
 // and not part of the gameplay loop (owner correction 2026-10-27,
@@ -126,12 +143,123 @@ export default function App() {
   // Options page: which column has focus (0 = music, 1 = handicap).
   const [activeCol, setActiveCol] = useState(0);
   const activeColRef = useRef(0);
-  // Single audio element managed imperatively (see the effect below).
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const wantedSrcRef = useRef<string | null>(null);
-  const chainRef = useRef<{ src: string; loop: boolean } | null>(null);
+  // Audio elements managed imperatively (see the effects below).
+  // - audioARef / audioBRef: the theme music. Two of them, so the
+  //   playlist can hand over to a preloaded track without a gap; the
+  //   active one is whichever `activeSlotRef` names.
+  // - cueRef: the one-shot celebration / game-over cue. It plays over
+  //   the theme, so the theme keeps its position and is never reloaded.
+  const audioARef = useRef<HTMLAudioElement>(null);
+  const audioBRef = useRef<HTMLAudioElement>(null);
+  const cueRef = useRef<HTMLAudioElement>(null);
+  const activeSlotRef = useRef<"a" | "b">("a");
+  // The audio bookkeeping (what is loaded, what is preloaded) lives in
+  // the pure state machine, so it can be tested without a browser.
+  const audioStateRef = useRef<AudioState>(initialAudioState());
   const needsGestureRef = useRef(false);
   const gamePausedRef = useRef(false);
+
+  // The theme element that is playing, and the one holding the next
+  // track. The two swap roles when a track ends.
+  const activeEl = () =>
+    activeSlotRef.current === "a" ? audioARef.current : audioBRef.current;
+  const spareEl = () =>
+    activeSlotRef.current === "a" ? audioBRef.current : audioARef.current;
+
+  // Sound effects (owner decisions 2026-10-25): the exact original
+  // sounds from the owner's files — block drop on every lock, line clear
+  // on every clear event, select1/select2 when a menu selection moves
+  // down/up, and the firework rockets looping on a top-5 game over.
+  //
+  // Audio bug fix (owner request 2026-10-29): the sound effects used to
+  // disappear completely later in a long game. Two causes:
+  // - every sound created a GainNode that was connected to the
+  //   destination and never disconnected, so the audio graph grew by two
+  //   nodes per locked piece until the context gave up;
+  // - the context was only resumed when its state was exactly
+  //   "suspended", and the resume was never awaited. WebKit spells an
+  //   interrupted context "interrupted", so after any interruption the
+  //   context stayed dead and every later sound was silent.
+  // Now the nodes are released when the sound ends, and the context is
+  // rebuilt if it cannot be resumed.
+  const popCtxRef = useRef<AudioContext | null>(null);
+  const sfxBuffersRef = useRef<Record<string, AudioBuffer>>({});
+
+  const playSfx = useCallback(
+    async (name: string): Promise<AudioBufferSourceNode | null> => {
+      const emit = async (ctx: AudioContext): Promise<AudioBufferSourceNode | null> => {
+        let buf = sfxBuffersRef.current[name];
+        if (!buf) {
+          const res = await fetch(SFX_URLS[name]);
+          const raw = await res.arrayBuffer();
+          buf = await ctx.decodeAudioData(raw);
+          sfxBuffersRef.current[name] = buf;
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const gain = ctx.createGain();
+        gain.gain.value = SFX_GAINS[name] ?? 1.0;
+        src.connect(gain).connect(ctx.destination);
+        // Release the nodes when the sound ends: leaving them attached to
+        // the destination leaks a gain node per sound, and the pile-up
+        // eventually silences the whole context.
+        src.addEventListener("ended", () => {
+          try {
+            src.disconnect();
+            gain.disconnect();
+          } catch {
+            // already released
+          }
+        });
+        src.start();
+        return src;
+      };
+      // The decision of what to do with the context is pure and lives in
+      // sfxPlan.ts, so it can be tested without a browser.
+      const build = (): AudioContext => {
+        const fresh = new AudioContext();
+        popCtxRef.current = fresh;
+        // The decoded buffers belong to the old context's sample rate.
+        sfxBuffersRef.current = {};
+        fresh.onstatechange = () => {
+          if (fresh.state !== "running" && fresh.state !== "closed") {
+            fresh.resume().catch(() => {});
+          }
+        };
+        return fresh;
+      };
+      try {
+        let ctx = popCtxRef.current;
+        let plan = planSfx({
+          state: (ctx?.state as SfxContextState | undefined) ?? null,
+        });
+        if (plan.action === "create") {
+          ctx = build();
+          await ctx.resume().catch(() => {});
+        } else if (plan.action === "resume") {
+          await ctx!.resume().catch(() => {});
+          const after = afterResume(ctx!.state as SfxContextState);
+          if (after.action === "rebuild") {
+            // An interrupted context that a resume did not revive is
+            // dead: build a fresh one, or every later sound would be
+            // silent too. This is what brought the block-drop and
+            // line-clear sounds back after the game had gone quiet.
+            ctx = build();
+            await ctx.resume().catch(() => {});
+          } else if (after.action === "create") {
+            ctx = build();
+            await ctx.resume().catch(() => {});
+          }
+        }
+        if (!ctx || ctx.state !== "running") return null;
+        return await emit(ctx);
+      } catch {
+        // A failed sound must never take the game down with it.
+        return null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const onResize = () =>
@@ -189,7 +317,7 @@ export default function App() {
             setActiveCol(col);
           } else if (e.code === "ArrowUp" || e.code === "ArrowDown") {
             const dir = e.code === "ArrowUp" ? -1 : 1;
-            playSfx(dir === 1 ? "select1" : "select2"); // select1 down, select2 up
+            void playSfx(dir === 1 ? "select1" : "select2"); // select1 down, select2 up
             if (activeColRef.current === 0) {
               setMusicSel((s) => {
                 const next = (s + dir + MUSIC_MENU.length) % MUSIC_MENU.length;
@@ -273,139 +401,135 @@ export default function App() {
     };
   }, [pressStart, send]);
 
-  // Music manager (owner request 2026-10-25): one audio element for the
-  // whole app. Title: the introduction theme until the menu is touched,
-  // then the previewed track (nothing for Silent). Game: the selected
-  // theme loops; on end-of-stage 06 plays once and chains into 07
-  // (Katyusha) until Enter; 09 (victory) for cleared levels 9/19/29...;
-  // 08 on game over.
+  // Music manager (owner request 2026-10-25): the theme music plays on
+  // its own <audio> element, the one-shot cues (06 end of stage, 09
+  // victory, 08 game over) on a second one.
+  //
+  // Audio bug fix (owner request 2026-10-29): the music used to be cut
+  // off by a second of silence, sometimes several times a minute. The
+  // cause was that ONE element was reused for everything: assigning a
+  // new `src` makes the browser load and decode the whole file again
+  // (up to 2.9 MB) before a single sample comes out. The level-clear
+  // path swapped the src to the celebration track and back again --
+  // twice per level -- and the playlist advance swapped it once per
+  // track.
+  //
+  // The fix:
+  // - The theme element keeps its src and its currentTime across a
+  //   celebration: it is only paused, so returning to it is instant.
+  // - The celebration plays on its own element, over the paused theme.
+  // - The playlist advance preloads the next track in a second element
+  //   and swaps them on `ended`, so the handover is gapless.
+  //
+  // The bookkeeping that decides all of this lives in audioPlan.ts (a
+  // pure state machine, so it can be tested without a browser); this
+  // effect only carries the actions out on the elements.
   const musicPhase = state?.music_phase ?? "gameplay";
   const track = state?.music_track ?? null;
   const paused = started && state?.status === "paused";
-  let wantSrc: string | null;
-  let wantLoop = true;
-  let wantChain: { src: string; loop: boolean } | null = null;
-  if (!started) {
-    // Title: the introduction theme loops. On the options page there is
-    // no background music (owner request 2026-10-25): tracks play only
-    // as menu previews, and Silent means silence.
-    wantSrc = atOptions
-      ? menuTouched
-        ? GAMEPLAY_TRACKS[MUSIC_IDS[musicSel] ?? ""] ?? null
-        : null
-      : introUrl;
-  } else if (musicPhase === "level_complete") {
-    wantSrc = endOfStageUrl;
-    wantLoop = false;
-    wantChain = { src: katyushaUrl, loop: true };
-  } else if (musicPhase === "milestone") {
-    wantSrc = victoryUrl;
-  } else if (musicPhase === "game_over") {
-    wantSrc = gameOverMusicUrl;
-    wantLoop = false;
-  } else {
-    // Gameplay playlist (owner request 2026-10-25): start from the
-    // selected theme, then loop through all of them; Silent stays
-    // silent. Advance happens on each track's `ended` event.
-    wantSrc = track ? GAMEPLAY_TRACKS[track] ?? null : null;
-    wantLoop = false;
-  }
 
   useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    chainRef.current = wantChain;
-    // Playlist advances only during gameplay with a selected theme
-    // (owner request 2026-10-25); celebrations and game over don't.
-    playlistActiveRef.current =
-      started && musicPhase === "gameplay" && wantSrc !== null;
-    // The music pauses with the game and resumes in place (owner request
-    // 2026-10-25).
-    if (paused) {
-      if (!gamePausedRef.current && el.src && !el.paused) {
-        el.pause();
-        gamePausedRef.current = true;
+    const el = activeEl();
+    const spare = spareEl();
+    const cue = cueRef.current;
+    if (!el || !spare || !cue) return;
+    const plan = planMusic({
+      started,
+      atOptions,
+      menuTouched,
+      menuMusicId: MUSIC_IDS[musicSel] ?? null,
+      phase: musicPhase,
+      track,
+      introSrc: introUrl,
+      trackUrls: GAMEPLAY_TRACKS,
+      endOfStageSrc: endOfStageUrl,
+      victorySrc: victoryUrl,
+      gameOverSrc: gameOverMusicUrl,
+    });
+    const { state, actions } = stepAudio(audioStateRef.current, plan, {
+      started,
+      paused,
+      cycle: MUSIC_CYCLE,
+      themeUrls: THEME_URLS,
+    });
+    audioStateRef.current = state;
+    for (const action of actions) {
+      switch (action.type) {
+        case "theme-load":
+          el.pause();
+          el.src = action.src;
+          el.loop = action.loop;
+          el.play()
+            .then(() => {
+              needsGestureRef.current = false;
+            })
+            .catch(() => {
+              // WKWebView blocks autoplay until the first user gesture.
+              needsGestureRef.current = true;
+            });
+          break;
+        case "theme-unload":
+          el.pause();
+          el.removeAttribute("src");
+          spare.pause();
+          spare.removeAttribute("src");
+          break;
+        case "theme-play":
+          if (el.paused && el.src) {
+            el.play()
+              .then(() => {
+                needsGestureRef.current = false;
+              })
+              .catch(() => {
+                needsGestureRef.current = true;
+              });
+          }
+          break;
+        case "theme-pause":
+          el.pause();
+          break;
+        case "cue-play":
+          cue.src = action.src;
+          cue.loop = false;
+          cue.play().catch(() => {});
+          break;
+        case "cue-clear":
+          cue.pause();
+          cue.removeAttribute("src");
+          break;
+        case "cue-pause":
+          cue.pause();
+          break;
+        case "cue-resume":
+          if (cue.paused && cue.src) cue.play().catch(() => {});
+          break;
+        case "preload":
+          // The next playlist track is fetched and decoded in the spare
+          // element, so the handover is gapless.
+          spare.src = action.src;
+          spare.loop = false;
+          spare.load();
+          break;
       }
-      prevPhaseRef.current = musicPhase;
-      return;
     }
-    if (gamePausedRef.current) {
-      gamePausedRef.current = false;
-      if (el.src) el.play().catch(() => {});
-    }
-    const returning =
-      prevPhaseRef.current === "level_complete" ||
-      prevPhaseRef.current === "milestone";
-    if (returning && wantSrc !== null && playlistSavedRef.current) {
-      // Back from the celebration: continue the theme that was playing
-      // right before the level ended, at its position (owner request
-      // 2026-10-27), instead of restarting the selection.
-      const saved = playlistSavedRef.current;
-      playlistSavedRef.current = null;
-      const url = GAMEPLAY_TRACKS[saved.id];
-      if (url) {
-        playlistPosRef.current = saved.id;
-        wantedSrcRef.current = url;
-        el.src = url;
-        el.loop = wantLoop;
-        const onLoaded = () => {
-          el.currentTime = Math.max(0, Math.min(saved.time, el.duration || saved.time));
-          el.removeEventListener("loadedmetadata", onLoaded);
-        };
-        el.addEventListener("loadedmetadata", onLoaded);
-        el.play()
-          .then(() => {
-            needsGestureRef.current = false;
-          })
-          .catch(() => {
-            needsGestureRef.current = true;
-          });
-        prevPhaseRef.current = musicPhase;
-        return;
-      }
-    }
-    if (wantSrc !== wantedSrcRef.current) {
-      // Leaving gameplay: save the playlist position so the next level
-      // continues where the music left off (owner request 2026-10-27).
-      if (started && prevPhaseRef.current === "gameplay" && playlistPosRef.current) {
-        playlistSavedRef.current = { id: playlistPosRef.current, time: el.currentTime };
-      }
-      wantedSrcRef.current = wantSrc;
-      if (wantSrc === null) {
-        el.pause();
-        el.removeAttribute("src");
-        prevPhaseRef.current = musicPhase;
-        return;
-      }
-      el.src = wantSrc;
-      el.loop = wantLoop;
-      if (started && musicPhase === "gameplay") {
-        playlistPosRef.current = track;
-        playlistSavedRef.current = null;
-      }
-      el.play()
-        .then(() => {
-          needsGestureRef.current = false;
-        })
-        .catch(() => {
-          // WKWebView blocks autoplay until the first user gesture.
-          needsGestureRef.current = true;
-        });
-    } else if (el.loop !== wantLoop) {
-      el.loop = wantLoop;
-    }
-    prevPhaseRef.current = musicPhase;
-  }, [wantSrc, wantLoop, wantChain, paused, started, musicPhase, track]);
+    gamePausedRef.current = paused;
+  }, [started, atOptions, menuTouched, musicSel, musicPhase, track, paused]);
 
   useEffect(() => {
     const kick = () => {
-      const el = audioRef.current;
+      const el = activeEl();
       if (el && needsGestureRef.current && el.src && !gamePausedRef.current) {
         el.play()
           .then(() => {
             needsGestureRef.current = false;
           })
           .catch(() => {});
+      }
+      // A gesture is also what the browser wants before it lets an
+      // interrupted sound-effects context run again.
+      const ctx = popCtxRef.current;
+      if (ctx && ctx.state !== "running" && ctx.state !== "closed") {
+        ctx.resume().catch(() => {});
       }
     };
     window.addEventListener("keydown", kick);
@@ -416,64 +540,33 @@ export default function App() {
     };
   }, []);
 
-  // Gameplay playlist (owner request 2026-10-25): which track is playing
-  // and whether the playlist should keep advancing. SavedPos keeps the
-  // track + position so the music continues where it left off after an
-  // end-of-stage celebration (owner request 2026-10-27).
-  const playlistPosRef = useRef<string | null>(null);
-  const playlistActiveRef = useRef(false);
-  const playlistSavedRef = useRef<{ id: string; time: number } | null>(null);
-  const prevPhaseRef = useRef<string>("gameplay");
-
-  const onMusicEnded = () => {
-    const el = audioRef.current;
-    const next = chainRef.current;
-    chainRef.current = null;
-    if (el && next) {
-      el.src = next.src;
-      el.loop = next.loop;
-      el.play().catch(() => {});
-      return;
-    }
-    // Advance the gameplay playlist: after the selected theme, loop
-    // through all the others.
-    if (el && playlistActiveRef.current) {
-      const idx = playlistPosRef.current ? MUSIC_CYCLE.indexOf(playlistPosRef.current) : -1;
-      const nextId = MUSIC_CYCLE[(idx + 1) % MUSIC_CYCLE.length];
-      playlistPosRef.current = nextId;
-      el.src = GAMEPLAY_TRACKS[nextId];
+  // Playlist advance (owner request 2026-10-25): after the selected
+  // theme, loop through all the others.
+  //
+  // Audio bug fix (owner request 2026-10-29): the advance used to
+  // assign `src` to the element that was playing, which forced a
+  // reload of the whole file and a second of silence. Now the next
+  // track is preloaded in the spare element and the two swap, so the
+  // handover is seamless.
+  const onMusicEnded = (e: React.SyntheticEvent<HTMLAudioElement>) => {
+    const el = e.currentTarget;
+    const active = activeEl();
+    if (!active || el !== active) return;
+    const { state, actions } = advancePlaylist(audioStateRef.current, {
+      cycle: MUSIC_CYCLE,
+      themeUrls: THEME_URLS,
+    });
+    audioStateRef.current = state;
+    for (const action of actions) {
+      if (action.type !== "swap") continue;
+      activeSlotRef.current = activeSlotRef.current === "a" ? "b" : "a";
+      const now = activeEl();
+      if (now) now.play().catch(() => {});
+      el.src = action.after;
       el.loop = false;
-      el.play().catch(() => {});
+      el.load();
     }
   };
-
-  // Sound effects (owner decisions 2026-10-25): the exact original
-  // sounds from the owner's files — block drop on every lock, line clear
-  // on every clear event, select1/select2 when a menu selection moves
-  // down/up, and the firework rockets looping on a top-5 game over.
-  const popCtxRef = useRef<AudioContext | null>(null);
-  const sfxBuffersRef = useRef<Record<string, AudioBuffer>>({});
-  const playSfx = useCallback((name: string): Promise<AudioBufferSourceNode | null> => {
-    const ctx = popCtxRef.current ?? new AudioContext();
-    popCtxRef.current = ctx;
-    if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    return (async () => {
-      let buf = sfxBuffersRef.current[name];
-      if (!buf) {
-        const res = await fetch(SFX_URLS[name]);
-        const raw = await res.arrayBuffer();
-        buf = await ctx.decodeAudioData(raw);
-        sfxBuffersRef.current[name] = buf;
-      }
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const gain = ctx.createGain();
-      gain.gain.value = SFX_GAINS[name] ?? 1.0;
-      src.connect(gain).connect(ctx.destination);
-      src.start();
-      return src;
-    })();
-  }, []);
 
   const lockCount = state?.lock_count ?? 0;
   const clearCount = state?.clear_count ?? 0;
@@ -486,8 +579,8 @@ export default function App() {
     lastClearRef.current = clearCount;
     // A lock that clears lines plays only the line-clear sound, not the
     // drop sound on top of it (owner request 2026-10-25).
-    if (cleared) playSfx("clear");
-    else if (locked) playSfx("drop");
+    if (cleared) void playSfx("clear");
+    else if (locked) void playSfx("drop");
   }, [lockCount, clearCount, playSfx]);
 
   // Fireworks after a top-5 game over (owner request 2026-10-25): the
@@ -579,7 +672,13 @@ export default function App() {
           {state.autopilot === "highscore" ? "AUTO - HIGH SCORE" : "AUTO - QUICK CLEAR LINES"}
         </div>
       )}
-      <audio ref={audioRef} onEnded={onMusicEnded} preload="auto" />
+      {/* Theme music: two elements, so the playlist can hand over to a
+          preloaded track without a gap, and the one-shot cues (06 end of
+          stage, 09 victory, 08 game over) on a third, over the paused
+          theme. */}
+      <audio ref={audioARef} onEnded={onMusicEnded} preload="auto" />
+      <audio ref={audioBRef} onEnded={onMusicEnded} preload="auto" />
+      <audio ref={cueRef} preload="auto" />
       {/* "NEXT" label above the preview box, as in the captures (spec 6.1). */}
       <div
         style={{
