@@ -3,12 +3,25 @@ import type { GameStatus } from "../hooks/useGameState";
 import { TitleScreen } from "./TitleScreen";
 import { OptionsScreen } from "./OptionsScreen";
 
+// The overlay's phase = the game's status, plus two UI-only phases that
+// exist before the core knows about us: "connecting" (no state snapshot
+// yet) and the pre-game screens. Declared here so App and the screens can
+// share the exact union.
 export type OverlayPhase = "connecting" | "start" | "options" | GameStatus;
 
+// ============================================================
+// WHAT THIS COMPONENT DOES
+// ============================================================
 // Status overlays drawn over the playfield (spec section 5). The "start"
 // phase renders the full title screen (TitleScreen). Other exact text,
 // positions, and timing are TBD from the owner's captures (open item);
 // these are functional placeholders.
+//
+// PHASE ROUTING: "start" and "options" return whole screens (they cover
+// everything); every other phase renders a dimmed box sized exactly to the
+// playfield's inner area, so the stack and panels stay visible around it.
+// "playing" renders nothing at all — except a transient notice (e.g.
+// "Game reset.") pushed by a core-event, which floats in the same box.
 export function Overlay({
   phase,
   score,
@@ -45,6 +58,10 @@ export function Overlay({
       />
     );
   }
+  // The dimmed box matches the playfield's INNER area exactly: origin plus
+  // both frame thicknesses on each side, then cols*cell x rows*cell. That
+  // is why the frame values appear here — the overlay covers blocks, not
+  // chrome.
   const { x, y, cols, rows, cell, frameOuter, frameInner } = LAYOUT.playfield;
   const box = {
     position: "absolute" as const,
@@ -68,6 +85,8 @@ export function Overlay({
     lineHeight: 1.6,
   });
 
+  // Each phase picks its content; falling through with null means "render
+  // nothing this frame" (the playing case without a notice).
   let content: React.ReactNode = null;
   switch (phase) {
     case "connecting":
@@ -100,7 +119,12 @@ export function Overlay({
                 key={i}
                 style={{ fontFamily: FONT_SMOOTH, fontSize: 32 * scale, lineHeight: 1.8 }}
               >
-                {`${i + 1}.  ${entry.at ? entry.at.replace("T", " ").slice(0, 16) : "--"}  ${entry.score}`}
+                {/* Date formatting on the fly: the core stores ISO timestamps
+                ("2026-10-31T21:04:07"); replace("T", " ") + slice(0, 16)
+                turn that into "2026-10-31 21:04" — minute precision, no
+                date library needed for a five-row table. "--" covers a
+                record saved without a timestamp. */}
+            {`${i + 1}.  ${entry.at ? entry.at.replace("T", " ").slice(0, 16) : "--"}  ${entry.score}`}
               </div>
             ))}
             <span className="blink">PRESS ENTER</span>

@@ -1,3 +1,6 @@
+// ============================================================
+// WHAT THIS FILE DOES
+// ============================================================
 // Regression test for the sound-effects context policy.
 //
 // The owner reported (2026-10-29): "later in the game, sound of
@@ -6,9 +9,18 @@
 // it can be checked here without a browser.
 //
 // Run with: npm test
+//
+// HOW THE TESTS WORK: planSfx() and afterResume() take a context state
+// string and return a decision. Each check pins one decision for one
+// state — a table of "given X, do Y" cases. The two that matter most
+// historically are the interrupted-context ones: the old code never
+// rebuilt in that state, which is what silenced every sound for the
+// rest of a game after the first interruption.
 import assert from "node:assert/strict";
 import { afterResume, planSfx } from "../src/sfxPlan.ts";
 
+// Same micro harness as audio-plan.test.ts: run, count, report; a failed
+// assert aborts the run with a non-zero exit code.
 let checks = 0;
 function check(name: string, fn: () => void) {
   fn();
@@ -17,6 +29,8 @@ function check(name: string, fn: () => void) {
 }
 
 console.log("sound-effects context policy");
+
+// -- planSfx: the decision BEFORE a resume attempt ------------------------
 
 check("with no context yet, one is created", () => {
   const p = planSfx({ state: null });
@@ -51,6 +65,10 @@ check("an interrupted context is resumed, then replaced if that fails", () => {
   assert.equal(p.action, "resume");
   assert.equal(p.then, "rebuild");
 });
+
+// -- afterResume: the decision AFTER a resume was attempted ---------------
+// planSfx("interrupted") says "resume, then rebuild if needed" — these
+// checks pin what "if needed" resolves to for each resulting state.
 
 check("a resume that worked leaves the context usable", () => {
   assert.equal(afterResume("running").action, "use");

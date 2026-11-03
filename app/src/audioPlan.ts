@@ -19,6 +19,29 @@
 //   next track is preloaded in the spare one, so the handover is
 //   gapless.
 
+// ============================================================
+// THE THREE ELEMENTS, AND THE INTENT KEY
+// ============================================================
+// App.tsx owns three <audio> elements; this machine tells them what to do:
+//   theme element A/B (two, swapping) -- the currently selected theme or
+//       playlist track. Two of them so a playlist advance preloads the
+//       next track in the spare and hands over without a gap.
+//   cue element -- one-shot celebrations (06 end of stage, 09 victory,
+//       08 game over), played OVER the paused theme.
+//
+// The central trick is the intent `key`. Instead of comparing audio
+// sources (strings of file URLs), the machine compares INTENT keys:
+//   "title"         -- title screen, introduction theme looping
+//   "preview:03"    -- options page, previewing track 03
+//   "gameplay:02"   -- playing, core-selected track 02
+//   "silence"       -- options page before a preview (or Silent)
+//   "keep"          -- special: whatever is loaded stays loaded, just
+//                      paused (celebrations, game over)
+// A key change is the ONLY thing that reloads a source, because a reload
+// costs a second of silence (load + decode of a ~2 MB ogg). Everything
+// else -- pause, resume, cue -- keeps the element's src and position
+// intact.
+
 export type MusicPlan = {
   /** What the theme element should be doing. "keep" means "hold
    * whatever is loaded and just pause it". */
@@ -51,7 +74,15 @@ export type PlanInput = {
   gameOverSrc: string;
 };
 
-/** What the theme and the cue element should be doing right now. */
+/**
+ * Half 1 of the machine: decide the INTENT from the game's situation.
+ * Pure and side-effect free — it returns a description, never touches an
+ * element. Decision order matters:
+ *   1. not started  -> title / options / preview (menu preview wins over
+ *                      the title theme once a track has been touched)
+ *   2. celebration phases -> "keep" the theme paused, name the cue
+ *   3. otherwise    -> the gameplay playlist, keyed by the core's track
+ */
 export function planMusic(input: PlanInput): MusicPlan {
   const { started, atOptions, menuTouched, phase, track } = input;
   if (!started) {
@@ -104,6 +135,15 @@ export function planMusic(input: PlanInput): MusicPlan {
     trackId: track,
   };
 }
+
+// ============================================================
+// THE STATE, AND WHY IT IS AN ARGUMENT
+// ============================================================
+// AudioState is everything the machine remembers between steps. It is
+// passed IN and returned OUT (rather than living in module scope) so a
+// test can run a hundred steps from a fresh state with no browser and no
+// reset — see scripts/audio-plan.test.ts, which walks a 30-level game
+// asserting the theme loads exactly once.
 
 export type AudioState = {
   /** The intent the theme element currently satisfies. */
@@ -164,18 +204,34 @@ export type AudioContext = {
 
 export type AudioStep = { state: AudioState; actions: AudioAction[] };
 
-/** Advance the audio state machine by one step. */
+/**
+ * Half 2 of the machine: reconcile the CURRENT AudioState against the
+ * intent the plan describes, and emit the minimal list of AudioActions
+ * that gets from here to there. The no-op rule is the point: an intent
+ * that matches the loaded key emits NOTHING, which is why coming back
+ * from a celebration resumes in place instead of reloading.
+ *
+ * The step order below is load-bearing — pause/quit checks come last and
+ * return early, so a paused game never also emits a load.
+ */
 export function stepAudio(state: AudioState, plan: MusicPlan, ctx: AudioContext): AudioStep {
   const actions: AudioAction[] = [];
   const next: AudioState = { ...state };
-  // A new game after a game over starts the theme from the top.
+  // A new game after a game over starts the theme from the top: the
+  // gameplay intent is "the same key" but the game is not, so the normal
+  // no-op rule must be overridden once. prevPhase is how we remember it.
   const newGame = state.prevPhase === "game_over" && plan.phase === "gameplay";
   next.prevPhase = plan.phase;
+  // The playlist only runs in real gameplay with a real selected track —
+  // not on the title, not during a celebration (its "ended" event would
+  // otherwise fire mid-cue and swap songs under the celebration).
   next.playlistActive =
     ctx.started && plan.phase === "gameplay" && plan.src !== null && plan.trackId !== null;
 
   // The cue element is independent of the theme element: it plays over
   // the paused theme, so the theme never has to be reloaded.
+  // Only a CHANGE of cue emits an action; the same cue again (e.g. every
+  // frame of the celebration) emits nothing.
   if (plan.cue !== state.wantedCue) {
     next.wantedCue = plan.cue;
     if (plan.cue === null) actions.push({ type: "cue-clear" });
@@ -183,6 +239,8 @@ export function stepAudio(state: AudioState, plan: MusicPlan, ctx: AudioContext)
   }
 
   // The theme element. "keep" holds whatever is loaded.
+  // This condition IS the reload rule: load only when the intent key
+  // differs (or a new game must restart the theme).
   if (plan.key !== "keep" && (plan.key !== state.loadedKey || newGame)) {
     next.loadedKey = plan.key;
     if (plan.src === null) {
@@ -205,6 +263,8 @@ export function stepAudio(state: AudioState, plan: MusicPlan, ctx: AudioContext)
 
   // The music pauses with the game and resumes in place.
   const themeLoaded = plan.key !== "keep" && state.loadedKey === plan.key;
+  // Pause check first, with an early return: while paused the ONLY legal
+  // actions are pauses (a paused game must not start or swap tracks).
   if (ctx.paused) {
     actions.push({ type: "theme-pause" });
     if (state.wantedCue !== null) actions.push({ type: "cue-pause" });
@@ -226,7 +286,18 @@ export function stepAudio(state: AudioState, plan: MusicPlan, ctx: AudioContext)
   return { state: next, actions };
 }
 
-/** The playlist advance: a track ended, so the two theme elements swap. */
+/**
+ * The playlist advance: a track ended, so the two theme elements swap.
+ * Called from App.tsx's `ended` handler — NOT part of stepAudio, because
+ * "ended" is an element event, not a state transition the plan describes.
+ *
+ * The swap: the spare element already holds the preloaded next track, so
+ * it becomes the active one and starts instantly; the old active element
+ * is handed the track AFTER that to preload for the next advance. Both
+ * guards are the "do nothing" cases: no playlist running (a celebration
+ * is on) or no preload ready (the advance is running ahead of the state
+ * machine) — then the ended track just stops.
+ */
 export function advancePlaylist(
   state: AudioState,
   ctx: { cycle: string[]; themeUrls: Record<string, string> },

@@ -1,19 +1,62 @@
+# ============================================================
+# WHAT THIS FILE DOES
+# ============================================================
+# The Python core's project definition. It tells `uv` (and any PEP 517
+# build tool) how the package is named, what it needs, and how the
+# tests are run.
+#
+# There are deliberately NO runtime dependencies here. The core is
+# pure Python with no third-party imports: it speaks JSON lines over
+# stdio to the Rust shell, so there is nothing to install at runtime.
+# Everything the core needs is in the standard library.
+#
+# WHY THE CORE IS A SEPARATE PACKAGE
+# ----------------------------------
+# `tetris_core` is importable on its own (`python -m tetris_core`),
+# which is what lets the Tauri shell spawn it as a child process and
+# lets the headless benchmark scripts import the real `Game` class
+# instead of reimplementing the rules. One implementation of the
+# rules, used by the app and by the tests alike.
+
 [project]
 name = "tetris-core"
 version = "0.1.0"
 description = "Tengen-style Tetris game core: pure Python, no UI dependencies"
+# The core uses `from __future__ import annotations`, so it also runs
+# on Python 3.9 -- which is what the packaged app falls back to when
+# the system has no 3.11+ interpreter. This floor is for development.
 requires-python = ">=3.11"
+# Empty on purpose: see the header note above.
 dependencies = []
 
+# ------------------------------------------------------------
+# Development dependencies
+# ------------------------------------------------------------
+# `uv sync` installs this group into core/.venv. pytest is the only
+# tool needed to run the suite.
 [dependency-groups]
 dev = ["pytest>=8.0"]
 
+# ------------------------------------------------------------
+# Build backend
+# ------------------------------------------------------------
+# hatchling is the standard modern backend; it only matters if the
+# core is ever packaged as a wheel. The app does not do that -- it
+# runs the source directly from the checkout.
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Which directories go into the wheel. `packages = ["tetris_core"]`
+# tells hatchling to include the package directory as a top-level
+# module (not as `src.tetris_core`).
 [tool.hatch.build.targets.wheel]
 packages = ["tetris_core"]
 
+# ------------------------------------------------------------
+# pytest configuration
+# ------------------------------------------------------------
+# `testpaths = ["tests"]` means a bare `uv run pytest` from core/
+# discovers core/tests/ automatically -- no path argument needed.
 [tool.pytest.ini_options]
 testpaths = ["tests"]

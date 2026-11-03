@@ -1,8 +1,17 @@
 import { FONT_SMOOTH, LAYOUT, PANEL_BG, TEXT_BRIGHT, TEXT_COLOR } from "../theme";
 import type { GameState } from "../hooks/useGameState";
 
+// ============================================================
+// WHAT THIS COMPONENT DOES
+// ============================================================
 // Score, high score, lines, and level readouts (spec 6.1), styled after the
 // captures: white labels on gray bars, pale-blue values.
+//
+// The four rows are one `.map` over a [label, value] table rather than four
+// copy-pasted blocks: same structure, same spacing (rowHeight apart), only
+// the text differs. Every value arrives ready-computed in the state
+// snapshot — the panel has no idea how scoring works, and must not (the
+// core owns points, line counts and the level curve).
 export function ScorePanel({
   state,
   scale,
@@ -11,6 +20,9 @@ export function ScorePanel({
   scale: number;
 }) {
   const { x, y, rowHeight, labelSize, valueSize } = LAYOUT.score;
+  // `?? 0` covers the connecting phase (state is null): the panel shows
+  // zeros in its slots instead of vanishing — the readout chrome is part
+  // of the screen layout and should always be there.
   const rows: Array<[string, string]> = [
     ["SCORE", String(state?.score ?? 0)],
     ["HIGH SCORE", String(state?.high_score ?? 0)],

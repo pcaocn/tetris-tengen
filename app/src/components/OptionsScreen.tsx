@@ -9,11 +9,36 @@ import {
 import { drawSaintBasilsScene } from "./cathedral";
 import { logicalCanvas } from "./draw";
 
+// ============================================================
+// WHAT THIS COMPONENT DOES
+// ============================================================
+// The options page, shown between the title and the game (owner request
+// 2026-10-25): the cathedral scene dimmed behind two menu columns — MUSIC
+// on the left, HANDICAP on the right — and a blinking start prompt.
+//
+// WHO OWNS THE STATE: none of it. The selection indices live in App.tsx
+// (musicSel, handicapSel, activeCol) because App also routes the keys and
+// starts the game with the chosen values; this component is a pure
+// renderer of (selection, focus). Keyboard handling and the Enter->start
+// transition are in App.tsx's keydown effect.
+//
+// LOCAL COPIES OF THE APP'S CONSTANTS: MUSIC_MENU and HANDICAP_LEVELS are
+// duplicated here (App.tsx has the same arrays) so the display labels stay
+// with the display. They must stay in sync with App's MUSIC_IDS /
+// HANDICAP_LEVELS, which carry the protocol values — the menu index here
+// and the value sent in `new_game` are parallel arrays of the same length.
 const MUSIC_MENU = ["Silent", "Loginska", "Bradinsky", "Kalinka", "Troika"];
+// Handicap = number of garbage rows dealt at spawn (owner request
+// 2026-10-25). 0 rows = no handicap; 12 is the hardest.
 const HANDICAP_LEVELS = [0, 3, 6, 9, 12];
 
 // The cathedral scene drawn dimmed as the options page background
 // (owner request 2026-10-25).
+//
+// It is the same drawSaintBasilsScene() as the title screen, at the same
+// 1960x1476 scene size, just wrapped in a div with opacity 0.3 — visual
+// continuity between the two screens without a second piece of art. The
+// 44/300 offset pushes it down so the columns have clear sky behind them.
 function SceneBackdrop({ scale }: { scale: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -37,6 +62,10 @@ function SceneBackdrop({ scale }: { scale: number }) {
 // right column selects the handicap rows. Up/Down move within the
 // focused column, Left/Right switch focus, Enter starts the game. All
 // options are listed as full menus.
+//
+// One reusable column, told which row is selected and whether it has
+// keyboard focus — the highlight styling is all derived from those two
+// facts, so the component needs no state of its own.
 function Column({
   title,
   items,
@@ -78,6 +107,11 @@ function Column({
       </div>
       {items.map((item, i) => {
         const sel = i === selected;
+        // Row styling: the selected row is a gold bar with black text; the
+        // focused column ALSO draws a white outline on its selected row, so
+        // on a two-column page you can always tell (a) which row is chosen
+        // and (b) which column the keys will move. The unfocused column is
+        // additionally dimmed to 0.55 opacity by the container above.
         return (
           <div
             key={item}
@@ -102,6 +136,14 @@ function Column({
   );
 }
 
+/**
+ * Renders the whole options page.
+ *
+ * @param musicSel  index into MUSIC_MENU (and App's parallel MUSIC_IDS).
+ * @param handicap  the selected handicap VALUE (rows), not an index — hence
+ *                  the indexOf() lookup in the HANDICAP column below.
+ * @param activeCol 0 = music column focused, 1 = handicap column focused.
+ */
 export function OptionsScreen({
   scale,
   musicSel,
@@ -124,6 +166,10 @@ export function OptionsScreen({
       }}
     >
       <div style={{ position: "relative", flex: 1 }}>
+        {/* The same three-layer frame as the title screen (24/12/20 px
+            insets): dark band, light band, then the black interior —
+            painted with plain inset divs instead of canvas because they
+            are pure rectangles. */}
         <div
           style={{ position: "absolute", inset: `${24 * scale}px`, background: FRAME_DARK }}
         />
@@ -150,6 +196,7 @@ export function OptionsScreen({
           x={240}
           scale={scale}
         />
+        {/* indexOf because the prop is the value (rows), not the index. */}
         <Column
           title="HANDICAP"
           items={HANDICAP_LEVELS}

@@ -1,16 +1,57 @@
+# ============================================================
+# WHAT THIS FILE DOES
+# ============================================================
+# The Rust crate manifest for the Tauri shell -- the thin desktop
+# wrapper that owns the window and brokers the connection to the
+# Python core.
+#
+# The shell has three jobs and no more (see src/main.rs):
+#   1. spawn the Python core as a child process,
+#   2. relay JSON lines between that process's stdio and the web
+#      front end (Tauri commands in, Tauri events out),
+#   3. supervise the child -- notice when it dies and surface that
+#      to the UI instead of letting the window sit there dead.
+#
+# It contains NO game rules. Scoring, gravity, lock delay and the
+# rest live in the Python core, so the app and the headless
+# benchmarks can never disagree about them.
+
 [package]
 name = "tengen-tetris"
 version = "0.1.0"
 description = "Tengen-style Tetris (Tauri shell)"
+# Rust 2021 edition: the current stable language edition.
 edition = "2021"
 
+# ------------------------------------------------------------
+# Build-time dependencies
+# ------------------------------------------------------------
+# tauri-build runs build.rs before the crate compiles. It reads
+# tauri.conf.json and the capabilities/ folder and generates the
+# permission scaffolding into OUT_DIR, so the `tauri::` macros in
+# main.rs have real code behind them.
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# ------------------------------------------------------------
+# Runtime dependencies
+# ------------------------------------------------------------
 [dependencies]
+# `tauri` -- the window, the webview, the IPC layer, and the
+# plugin/permission machinery.
 tauri = { version = "2", features = [] }
+# `serde` with the derive feature -- the #[derive(Serialize)] /
+# #[derive(Deserialize)] on the shell's own message structs.
 serde = { version = "1", features = ["derive"] }
+# `serde_json` -- encoding the commands sent to the core and
+# decoding the JSON snapshots it sends back.
 serde_json = "1"
 
+# ------------------------------------------------------------
+# Dev profile
+# ------------------------------------------------------------
+# Incremental compilation: the shell is small but `tauri` is a
+# large dependency tree, and a rebuild during development is much
+# faster with incremental compilation on.
 [profile.dev]
 incremental = true

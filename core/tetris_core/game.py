@@ -1,4 +1,28 @@
-"""Game state machine and 60 Hz frame update (Tengen rules, spec 4)."""
+"""Game state machine and 60 Hz frame update (Tengen rules, spec 4).
+
+This is the heart of the engine: it owns the board, the current piece, the
+score, and the status, and it advances all of them by exactly one frame
+per `update()` call.
+
+THE FRAME UPDATE, IN ORDER
+---------------------------
+`update()` runs these steps in this order, and the order matters:
+
+    1. STATUS CHECKS -- a celebration or a paused game does nothing else.
+    2. CLEAR ANIMATION -- if rows are dissolving, that is the whole frame.
+    3. DAS -- apply any auto-repeat movement from a held arrow key.
+    4. AUTOPILOT -- if the cheat autopilot is on, drive the piece.
+    5. GRAVITY -- let the piece fall one row if its counter expired.
+    6. LOCK DELAY -- if the piece is resting, count the grace frames and
+       lock when the window expires.
+
+Two design rules run through the whole file:
+  - The UI never computes a rule; the UI only sends inputs and renders
+    the state this class produces.
+  - The autopilot does not get special powers. It drives the SAME piece
+    through the SAME movement, rotation and gravity code a human uses --
+    it just chooses which key to press (spec 4.11).
+"""
 
 from __future__ import annotations
 
@@ -227,23 +251,34 @@ class Game:
     # ------------------------------------------------------------------
 
     def update(self) -> bool:
-        """Advance one frame. Returns True if observable state changed."""
+        """Advance one frame. Returns True if observable state changed.
+
+        The return value is how the protocol layer decides whether to
+        send a state event: an idle frame (nothing moved, nothing
+        cleared) costs no message and no UI redraw.
+        """
+        # ---- Step 1: status gates -------------------------------------
         if self.status is Status.LEVEL_COMPLETE:
             # End-of-stage celebration (owner request 2026-10-29): the
             # celebration track plays once, then the next level starts
-            # automatically.
+            # automatically. Nothing else may happen during this window.
             self._celebrate_frames += 1
             if self._celebrate_frames >= CELEBRATE_FRAMES:
                 self._resume_after_celebration()
             return True
         if self.status is not Status.PLAYING:
+            # Paused or game over: the game is frozen.
             return False
         self.frame += 1
+        # ---- Step 2: the line-clear dissolve owns the frame -----------
         if self._clearing_rows is not None:
             # Line-clear dissolve (spec 4.5): the completed rows flicker
             # in place; afterwards they vanish and the next piece spawns.
+            # While this runs the piece does not exist yet, so the rest
+            # of the frame update is skipped entirely.
             self._clearing_frame += 1
             if self._clearing_frame >= CLEAR_ANIM_FRAMES:
+                # The animation is over: actually remove the rows now.
                 self.board.clear_rows(self._clearing_rows)
                 self._clearing_rows = None
                 if self._celebrate:
@@ -257,13 +292,16 @@ class Game:
                 else:
                     self._spawn_next()
             return True
+        # ---- Step 3: held-arrow auto-repeat (DAS) --------------------
         changed = self._handle_das()
+        # ---- Step 4: the autopilot drives the piece, if enabled ------
         if self.autopilot and self._piece_kind is not None:
             # Autopilot (owner request 2026-10-27, throttled 2026-10-28):
             # drive the piece toward the planned placement at human
             # input speed; the gravity, lock-delay, and clear machinery
             # below run unchanged underneath it.
             changed |= self._autopilot_step()
+        # ---- Step 5: gravity ------------------------------------------
         if self._can_move(0, 1):
             # Airborne: the rest window is cancelled (spec 4.4). Gravity
             # moves the piece down one row when its counter expires; a
@@ -271,13 +309,17 @@ class Game:
             self._rest_frames = 0
             changed |= self._apply_gravity()
             if self._can_move(0, 1):
+                # Still airborne after gravity: nothing else to do this
+                # frame (the piece did not land).
                 return changed
+        # ---- Step 6: lock delay ---------------------------------------
         # The piece is resting on the floor/stack this frame (the landing
         # frame counts as the first resting frame). It keeps a grace window
         # of one gravity interval ("1 drop", spec 4.4): the player can still
         # move or rotate it until the window expires.
         self._rest_frames += 1
         if self._rest_frames > lock_delay_frames(self.level):
+            # The window expired: freeze the piece into the board.
             self._lock()
             return True
         return changed
@@ -346,13 +388,32 @@ class Game:
         (the discrete key-press rate), descending at soft-drop speed via
         the normal gravity machinery (the Down-key rate). The plan is
         computed once per piece; if the way is blocked or no legal
-        placement exists, the piece is abandoned to fall naturally."""
+        placement exists, the piece is abandoned to fall naturally.
+
+        THE THROTTLE IS THE POINT
+        --------------------------
+        The autopilot gets no special abilities: it moves the piece by
+        calling the same `_try_rotate` and `_move` methods a human
+        keypress reaches. At most ONE of those happens per frame, which
+        is the rate at which a person can tap X or mash an arrow. It
+        also holds soft drop, so the piece descends at the Down-key rate.
+
+        The consequence is that the autopilot's games are directly
+        comparable to human games — it is "auto mode", not "god mode"
+        (owner request 2026-10-28).
+        """
         assert self._piece_kind is not None  # caller checked
         # Descend at soft-drop speed (the fastest a player can drop).
+        # Setting the flag is enough: the normal gravity machinery below
+        # picks it up, so the piece falls exactly like a held Down key.
         self._soft_drop = True
         if self._autopilot_abandoned:
+            # The plan is unreachable; just let the piece fall.
             return False
         if self._autopilot_plan is None:
+            # Plan once per piece, not once per frame: the search is the
+            # expensive part, and the board does not change while the
+            # piece is still in the air.
             self._autopilot_plan = autopilot.best_placement(
                 self.board, self._piece_kind, self.autopilot or "quick"
             )
@@ -363,9 +424,15 @@ class Game:
         # the rotation takes the shortest direction, other way if
         # blocked.
         if self._rot != rot:
+            # `% 4` makes the direction wrap correctly: a rotation from
+            # state 3 to state 0 is one step FORWARD (+1), not three
+            # steps backward.
             direction = 1 if (rot - self._rot) % 4 <= 2 else -1
+            # Try the short way first; if that is blocked, try the other
+            # way around (a rotation may be reachable only counter-clockwise).
             if self._try_rotate(direction) or self._try_rotate(-direction):
                 return True
+            # Neither direction works: the piece is wedged. Abandon it.
             self._autopilot_abandoned = True
             return False
         # One lateral step per frame (the arrow key-mash rate).
@@ -373,6 +440,9 @@ class Game:
             dx = 1 if x > self._piece_x else -1
             if self._move(dx):
                 return True
+            # The path is blocked (something is in the way). Abandon the
+            # plan rather than stalling: the piece falls and lands where
+            # it can, which is better than never locking.
             self._autopilot_abandoned = True
             return False
         return False
@@ -397,30 +467,60 @@ class Game:
         self._das_repeating = False
 
     def _handle_das(self) -> bool:
-        """Auto-repeat for left/right, as frame counters (spec 4.7)."""
+        """Auto-repeat for left/right, as frame counters (spec 4.7).
+
+        DAS = Delayed Auto Shift: the key moves the piece ONCE
+        immediately, waits `DAS_DELAY` frames, and then repeats every
+        `DAS_REPEAT` frames for as long as the key is held.
+
+        The state machine has two phases:
+          - not repeating yet: count up to DAS_DELAY, then make the first
+            auto-shift move and switch to the repeating phase.
+          - repeating: count up to DAS_REPEAT, then move again.
+
+        Both values are frame counters in Python, not in the UI — the
+        browser sends one "left" on keydown and one "left_off" on keyup,
+        and everything between is decided here (spec 2.4).
+        """
         if self._das_dir == 0:
-            return False
+            return False  # no arrow key held
         self._das_counter += 1
         if not self._das_repeating:
+            # Phase 1: waiting for the initial delay to expire.
             if self._das_counter >= DAS_DELAY:
                 self._das_repeating = True
                 self._das_counter = 0
                 return self._move(self._das_dir)
             return False
+        # Phase 2: repeating at the steady rate.
         if self._das_counter >= DAS_REPEAT:
             self._das_counter = 0
             return self._move(self._das_dir)
         return False
 
     def _apply_gravity(self) -> bool:
+        """Move the piece down one row if the fall timer has expired.
+
+        The fall speed is decided entirely in `gravity.py`; this method
+        only counts frames and applies the result. That split keeps the
+        speed table (the part that still needs verifying) in one file.
+        """
         if self._soft_drop:
+            # Count how long Down has been held: the soft drop accelerates
+            # the longer it is held (spec 4.3).
             self._soft_held += 1
             fpr = soft_drop_fpr(frames_per_row(self.level), self._soft_held)
         else:
+            # Not soft dropping: reset the hold counter so the next soft
+            # drop starts from the slow end of the curve again.
             self._soft_held = 0
             fpr = frames_per_row(self.level)
+        # The counter accumulates every frame; the piece falls when it
+        # reaches the frames-per-row value for the current speed.
         self._gravity_counter += 1
         if self._gravity_counter >= fpr:
+            # Reset the counter (not to zero but by subtraction is
+            # equivalent here) and drop the piece one row.
             self._gravity_counter = 0
             self._piece_y += 1
             return True
@@ -433,32 +533,65 @@ class Game:
         stack), try shifting one square to the left; reject if that also
         fails. VERIFY (spec 4.2): whether the kick also applies to the
         right wall and floor contact.
+
+        THE KICK IS THE WHOLE RULE
+        ---------------------------
+        Two candidates are tried, in order:
+            kick = 0  -- rotate where the piece is
+            kick = -1 -- rotate one square to the LEFT
+        The first one whose cells are all free wins. There is no
+        right-hand kick and no floor kick in this table (both are still
+        VERIFY items in the spec).
+
+        Note that the rotation is anchored to the piece's bounding-box
+        top-left corner (see pieces.py) — the piece does NOT spin around
+        its centre the way it does in Nintendo Tetris.
         """
         if self._piece_kind is None:
             return False
+        # The new rotation state, wrapping in both directions.
         new_rot = (self._rot + direction) % 4
         base = ROTATIONS[self._piece_kind][new_rot]
         for kick in (0, -1):
+            # Place the rotated shape at the piece's current position,
+            # shifted by the kick amount.
             cells = [
                 (x + kick + self._piece_x, y + self._piece_y) for x, y in base
             ]
             if self.board.cells_free(cells):
+                # Accept: update the rotation AND the position, because a
+                # kicked piece is now one column further left.
                 self._rot = new_rot
                 self._piece_x += kick
                 return True
         return False
 
     def _lock(self) -> None:
+        """Freeze the piece into the board and resolve any line clears.
+
+        The order here is the spec's order (spec 4.5): the piece is
+        written into the grid FIRST, then the completed rows are found,
+        then the score/lines/level are updated immediately — even though
+        the rows themselves stay on screen for the dissolve animation.
+        """
         if self._piece_kind is None:
             return
         # Landing pop (owner request 2026-10-25): every lock bumps the
         # counter; the state event carries it and the UI plays a
         # synthesized brick-thud on each increment.
         self.lock_count += 1
+        # Write the piece's four cells into the grid. The value stored is
+        # the piece index; the UI paints it with the LEVEL's locked color
+        # (spec 6.2), which is why the grid stores the piece kind and not
+        # a color.
         self.board.lock_cells(self.piece_cells(), int(self._piece_kind))
+        # There is no active piece until the next one spawns. During the
+        # clear animation this is what makes the UI draw no piece.
         self._piece_kind = None
+        # Which rows are now complete?
         rows = self.board.full_rows()
         if not rows:
+            # No clear: spawn the next piece immediately.
             self._spawn_next()
             return
         # Row-clear sound (owner request 2026-10-25): one counter bump
@@ -470,27 +603,48 @@ class Game:
         # before being removed and the next piece spawns.
         lines_before = self.lines
         self.lines += len(rows)
+        # The clear award (100/400/900/2500) plus any 30-line block
+        # bonuses the clear completed.
         self.score += points_for_clear(len(rows))
         self.score += BLOCK_BONUS_POINTS * block_bonuses(lines_before, self.lines)
         new_level = level_for_lines(self._start_level, self.lines)
         if new_level > self.level:
+            # The level went UP: this clear completed a 30-line block, so
+            # the end-of-stage celebration must play (spec 5).
             self._celebrate = True
             self.level = new_level
         elif new_level < self.level:
+            # The level went DOWN (only possible via the level cheat).
             self.level = new_level
+        # Remember the rows and start the dissolve animation. The rows
+        # are still IN the grid at this point -- they are removed later,
+        # when the animation ends in `update()`.
         self._clearing_rows = rows
         self._clearing_frame = 0
 
     def _spawn_next(self) -> None:
+        """Promote the previewed piece to the active piece, or end the game.
+
+        The piece order is: `next_piece` becomes active, and a NEW piece
+        is drawn into the preview slot. Doing it in this order means the
+        preview always shows the piece AFTER the active one.
+        """
         kind = self.next_piece
         self.next_piece = self._rng.next_piece()
         self._piece_kind = kind
+        # Spawn position (spec 4.1): the bounding box's left side at
+        # column 5, and the box's TOP at the top of the VISIBLE playfield
+        # (SPAWN_Y = HIDDEN_ROWS), so the piece is visible immediately
+        # after the previous one locks.
         self._piece_x = SPAWN_X
         self._piece_y = SPAWN_Y
-        self._rot = 0
+        self._rot = 0  # every piece spawns in rotation state 0
+        # Reset the per-piece timers.
         self._gravity_counter = 0
         self._soft_held = 0
         self._rest_frames = 0
+        # The autopilot must plan again for the new piece (the board
+        # changed, so the old plan is worthless).
         self._autopilot_plan = None  # replan for the new piece
         self._autopilot_abandoned = False
         if not self.board.cells_free(self.piece_cells()):
@@ -500,9 +654,13 @@ class Game:
             self._piece_kind = None
             self.status = Status.GAME_OVER
             self.high_score = max(self.high_score, self.score)
+            # Does this run make the top 5?
             self.top_run = highscore.qualifies(self.score, self._highscore_path)
             if self.top_run:
+                # It qualifies: write it to the table and refresh the
+                # HIGH SCORE readout with the new best.
                 self.top_scores = highscore.add(self.score, self._highscore_path)
                 self.high_score = max(self.high_score, self.top_scores[0]["score"])
             return
+        # The piece spawned successfully: count it for the stats panel.
         self.stats.increment(kind)

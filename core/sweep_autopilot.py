@@ -10,6 +10,51 @@ score", which would be censored.
 
 Usage:
     uv run python sweep_autopilot.py --seeds 100 --cap 250000
+
+WHAT THIS SCRIPT IS FOR
+-----------------------
+It is the tuning workbench for the "highscore" autopilot profile. The
+profile is a set of weights in `core/tetris_core/autopilot.py`; this
+script builds MANY candidate profiles (each one a small change to the
+current best), plays every candidate on the same seeds, and prints a
+comparison table so a better profile can be picked on evidence rather
+than on a hunch.
+
+THE MEASUREMENT RULES THAT MAKE THE RESULTS TRUSTWORTHY
+-------------------------------------------------------
+1. SAME SEEDS FOR EVERY VARIANT. The seeds are drawn once from a master
+   seed, and every variant plays exactly those seeds. A variant is
+   therefore never lucky or unlucky -- it is only different.
+2. A FIXED FRAME BUDGET. Every run gets `--cap` frames (250,000 by
+   default, about 69 minutes of game time at 60 Hz). A run that dies
+   early stops earning score, so the score at the cap measures "how far
+   did this profile get", and a variant that survives longer scores
+   more. This is why the metric is score@cap and not final score.
+3. EARLY DEATHS ARE COUNTED SEPARATELY. A run that topes out with fewer
+   than 3000 lines is an "early death" -- the failure mode the board-
+   fullness work was about. The count is the survival metric.
+4. STATISTICS, NOT JUST MEANS. The output prints median and mean score,
+   because the score distribution is heavily skewed: a few great runs
+   pull the mean far above the typical run.
+
+READING THE OUTPUT
+------------------
+    score@cap: mean / median   -- higher is better
+    lines median                -- how far the typical run got
+    early deaths=X/N           -- LOWER is better (survival)
+    died=X/N                   -- any death at all, within the budget
+    pts/line                    -- the score efficiency of the clears
+    tetrises                    -- average tetris count per run
+
+The final ranking is by MEDIAN score, with early deaths as the
+tiebreak. The median is used because it is not dragged around by the
+handful of runs that get lucky.
+
+SEE ALSO
+--------
+    core/analyze_frontier.py   -- paired statistical comparison of the
+                                   variants in the CSV this writes
+    core/simulate_autopilot.py -- a full-game benchmark of one strategy
 """
 
 from __future__ import annotations
@@ -26,6 +71,11 @@ from tetris_core.game import Game, Status
 from tetris_core.rng import PieceRNG
 
 # The pre-2026-10-29 profile, kept as the sweep's baseline.
+#
+# This is the profile as it was BEFORE the board-fullness work: no
+# danger ramp at all, so it plays for score all the way to the ceiling.
+# Every later variant is measured against this baseline to show what the
+# danger ramp bought.
 BASELINE = {
     "landing_w": autopilot.W_LANDING,
     "landing_free": 4.0,
@@ -39,8 +89,27 @@ BASELINE = {
 
 
 def variant(name: str, **overrides) -> tuple[str, dict]:
-    """Build a variant profile from the current highscore profile."""
+    """Build a variant profile from the current highscore profile.
+
+    A variant is the SHIPPED profile with one or two values changed.
+    Starting from the shipped profile (rather than from scratch) is what
+    makes the sweep results interpretable: every variant differs from
+    the current best by exactly the amount under test.
+
+    `danger_w` is special: it is a nested dict of the survival weights,
+    so it is MERGED into the existing danger dict rather than replacing
+    it. That way `danger_w={"points_w": 3.0}` changes only the points
+    weight and leaves the other danger weights alone.
+
+    An unknown key is an error, not a silent no-op -- a typo in a
+    variant name would otherwise produce a variant that is identical to
+    the baseline and quietly corrupt the comparison.
+    """
+    # Deep copy: the profile contains nested dicts, and a shallow copy
+    # would let one variant's edit leak into the next one.
     profile = copy.deepcopy(autopilot.STRATEGIES["highscore"])
+    # Pull the nested override out before the flat-key loop, because
+    # "danger_w" is not a top-level key of the profile.
     danger_w = overrides.pop("danger_w", None)
     for key, value in overrides.items():
         if key in profile:
@@ -48,11 +117,49 @@ def variant(name: str, **overrides) -> tuple[str, dict]:
         else:
             raise KeyError(f"unknown profile key: {key}")
     if danger_w is not None:
+        # Merge the given danger weights over the existing ones.
         profile["danger_w"] = {**profile.get("danger_w", {}), **danger_w}
     return name, profile
 
 
 def build_variants() -> dict[str, dict]:
+    """The catalogue of candidate profiles to compare.
+
+    This is a HISTORY of the tuning work, kept in the code so every
+    result in the spec can be reproduced. The rounds are in the order
+    they were run:
+
+      baseline / no-danger / d*-s*   round 1: does the danger ramp help,
+                                     and where should it start and how
+                                     steep should it be?
+      hard / hard-flat* / hard-holes* round 2: the round-1 winner plus a
+                                     flatness penalty for the canyon-
+                                     next-to-a-tower death shape.
+      hard-s3/s4/s5 / hard-flat12/16  round 3: sharper ramps, stronger
+                                     flatness.
+      hard-flat8-c2/c3/c4, ...-fb*    round 4-5: price the clears
+                                     properly as the stack fills.
+      hard-flat8-agg*/maxh*          round 6: reward taking the stack
+                                     DOWN. (Measured to make things
+                                     worse, and dropped in round 7.)
+      hard-flat8-lw*                 round 7: pay per ROW at danger
+                                     instead of by point value.
+      cur / sh4..sh12 / dh1 / lc*    round 9: the score/survival
+                                     TRADEOFF curve, and two candidates
+                                     that might bend it.
+      dw0..dw60 / dwl2..dwl4         round 10: the aggressiveness dial
+                                     itself -- what refusing a small
+                                     clear actually buys.
+      dmax1 / dmax1w2                round 11: the two fixes the
+                                     measurements point at.
+
+    Every variant is a full profile, so a variant can be copied straight
+    into `autopilot.STRATEGIES["highscore"]` when it wins.
+
+    NOTE: this list is long, and a full sweep runs every entry on every
+    seed. Use `--only` to run just the variants you are interested in
+    (see main()).
+    """
     v: dict[str, dict] = {"baseline": copy.deepcopy(BASELINE)}
     v["no-danger"] = variant(
         "no-danger", danger_h=None, danger_w={}
@@ -397,23 +504,47 @@ def build_variants() -> dict[str, dict]:
 
 
 def run_one(job) -> dict:
+    """Play one full game with one variant profile and report the result.
+
+    This runs in a worker process, so it must be self-contained: it
+    takes the seed, the profile and the frame budget, and returns a
+    plain dict (which is picklable -- a Game object is not).
+
+    Note the profile is installed by OVERWRITING the global strategy
+    entry. That is safe here because each worker process handles its
+    jobs one at a time, and it is what lets the sweep reuse the real
+    `Game` and the real `autopilot` code -- the sweep never re-implements
+    the game, it only changes the weights.
+    """
     seed, profile, cap = job
+    # Install this run's weights as THE highscore profile.
     autopilot.STRATEGIES["highscore"] = profile
+    # A fresh game on a seeded RNG: the same seed always produces the
+    # same piece sequence.
     game = Game(rng=PieceRNG(seed))
     game.set_autopilot("highscore")
 
+    # Clear-type counters, derived from how the line count changes.
     singles = doubles = triples = tetrises = 0
     prev_lines = 0
     frames = 0
     died = False
     died_at = None
 
+    # The main loop: advance the game one frame at a time until the
+    # game ends or the frame budget runs out.
     while game.status is not Status.GAME_OVER and frames < cap:
         game.update()
         frames += 1
         if game.status is Status.LEVEL_COMPLETE:
+            # The end-of-stage celebration would wait for a human to
+            # press Enter. Resume it the way the UI's Enter key does,
+            # so the game keeps playing. (In the real app the
+            # celebration plays out by itself -- spec 5.)
             game.pause()
         if game.lines > prev_lines:
+            # The line count jumped: a clear just happened. The size of
+            # the jump tells us the clear type.
             cleared = game.lines - prev_lines
             if cleared == 1:
                 singles += 1
@@ -425,6 +556,7 @@ def run_one(job) -> dict:
                 tetrises += 1
             prev_lines = game.lines
         if game.status is Status.GAME_OVER and died_at is None:
+            # Record the death (once) and the frame it happened on.
             died = True
             died_at = frames
 
@@ -441,12 +573,56 @@ def run_one(job) -> dict:
         "doubles": doubles,
         "died": died,
         "died_at": died_at,
+        # The survival metric: died with fewer than 3000 lines. 3000
+        # lines is roughly level 100, so this counts the runs that died
+        # long before a good game would have finished.
         "died_early": bool(died and game.lines < 3000),
+        # Score efficiency: how many points the run earned per line.
         "pts_per_line": game.score / game.lines if game.lines else 0.0,
     }
 
 
 def main() -> None:
+    """Command-line entry point.
+
+    USAGE
+    -----
+        # The full catalogue of variants (long -- several hours).
+        uv run python sweep_autopilot.py --seeds 100 --cap 250000
+
+        # Just the variants you care about (much faster).
+        uv run python sweep_autopilot.py --seeds 400 --only cur,sh4,sh6
+
+        # Keep the per-run rows for the statistical analysis.
+        uv run python sweep_autopilot.py --seeds 400 --only cur,sh4 \
+            --out ../stats/sweep.csv
+
+    THE OPTIONS
+    -----------
+        --seeds N        how many seeds to use (default 100). More seeds
+                         means less noise; 400 is the number the spec
+                         quotes for the paired measurements.
+        --cap N          frame budget per run (default 250,000 = about
+                         69 minutes of game time at 60 Hz).
+        --master-seed N  the seed the SEED LIST is drawn from (default
+                         11111). This makes the whole sweep reproducible.
+                         Note this is a different seed space from the
+                         one in simulate_autopilot.py (20261028).
+        --only A,B,C     run only these variants (names from build_variants).
+        --out PATH       write the per-run rows to a CSV, for
+                         analyze_frontier.py.
+        --workers N      parallel worker processes (default up to 8).
+                         Keep it modest on a busy machine -- 4 is a good
+                         value for a long unattended sweep.
+
+    THE PARALLELISM
+    ----------------
+    Variants run one after another, but the SEEDS of one variant run in
+    parallel through a process pool. That keeps the machine busy without
+    running every variant at once, and it means the per-variant summary
+    line is printed as soon as that variant finishes -- so a long sweep
+    still shows progress.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=100)
     ap.add_argument("--cap", type=int, default=250_000)
@@ -461,11 +637,18 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    # ---- Which variants to run --------------------------------------
     variants = build_variants()
     if args.only:
+        # Keep only the named variants. An unknown name simply matches
+        # nothing, so check the names against build_variants() if a
+        # variant you expected is missing from the output.
         wanted = [s.strip() for s in args.only.split(",")]
         variants = {k: v for k, v in variants.items() if k in wanted}
 
+    # ---- The shared seed list ---------------------------------------
+    # Drawn ONCE from the master seed, then used by every variant. This
+    # is what makes the comparison paired (see analyze_frontier.py).
     seed_rng = random.Random(args.master_seed)
     seeds = seed_rng.sample(range(1, 2**31 - 1), args.seeds)
 
@@ -477,7 +660,12 @@ def main() -> None:
 
     def write_csv() -> None:
         """Write the rows collected so far, so a long sweep stays
-        analyzable while it is still running."""
+        analyzable while it is still running.
+
+        Called after every variant, so the CSV is always complete up to
+        the last finished variant -- if a long sweep is interrupted, the
+        data so far is still on disk.
+        """
         if not args.out or not rows:
             return
         import csv
@@ -487,17 +675,25 @@ def main() -> None:
             writer.writeheader()
             writer.writerows(rows)
 
+    # ---- Run every variant ------------------------------------------
     for name, profile in variants.items():
+        # One job per seed: (seed, profile, frame budget).
         jobs = [(s, profile, args.cap) for s in seeds]
         results = []
+        # A fresh pool per variant: the workers inherit the profile
+        # through the job tuple, so no shared state leaks between them.
         with mp.Pool(processes=args.workers) as pool:
+            # imap_unordered returns results as they finish, so a slow
+            # seed does not hold up the rest.
             for res in pool.imap_unordered(run_one, jobs):
                 res["variant"] = name
                 results.append(res)
+        # Sort by seed so the CSV rows are in a stable, readable order.
         results.sort(key=lambda r: r["seed"])
         rows.extend(results)
         write_csv()
 
+        # ---- The per-variant summary line ---------------------------
         scores = [r["score"] for r in results]
         lines = [r["lines"] for r in results]
         early = sum(r["died_early"] for r in results)
@@ -511,11 +707,14 @@ def main() -> None:
               f"tetrises={statistics.mean([r['tetrises'] for r in results]):>7.1f}",
               flush=True)
 
+    # ---- The final ranking -----------------------------------------
     # Ranking by median score at the budget, with early deaths as the tiebreak.
     print("\n  ranked by median score@cap:")
     by_variant: dict[str, list[dict]] = {}
     for r in rows:
         by_variant.setdefault(r["variant"], []).append(r)
+    # Sort by median score (descending), then by FEWER early deaths
+    # (the negation makes "fewer" sort higher).
     ranked = sorted(
         by_variant.items(),
         key=lambda kv: (
@@ -532,6 +731,10 @@ def main() -> None:
     if args.out:
         write_csv()
         print(f"\n  CSV written to {args.out}")
+        # The next step of the workflow is the statistical analysis of
+        # this CSV, which needs the reference variant name:
+        #     uv run python analyze_frontier.py <this csv> --ref cur
+        # (see the README's "Autopilot sweep" section.)
 
 
 if __name__ == "__main__":

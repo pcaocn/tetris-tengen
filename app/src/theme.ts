@@ -1,7 +1,30 @@
+// ============================================================
+// WHAT THIS FILE DOES
+// ============================================================
+// The design vocabulary of the whole UI, in one place: the logical
+// resolution, the layout grid (where every panel sits), the measured Tengen
+// palettes, and the display-only piece shapes. Everything that a reader
+// would otherwise have to guess — "why is the playfield at x=144?", "what
+// color is a locked J on level 2?" — is answered here, next to the number.
+//
+// The two consumers are the React components (which position absolutely
+// using LAYOUT) and the canvas painters (which scale logical units to
+// device pixels). Nothing in this file computes game rules; the numbers
+// are either measured from the owner's captures or owner decisions, and
+// each carries its date and reason.
+//
 // Logical resolution (spec 6.4): 8x the NES 256x240 output in each
 // direction (2048x1920), keeping the 256:240 aspect ratio, so every block,
 // bevel, and frame is drawn with high-definition vector detail at any
 // window size. Changeable by the owner; keep the aspect ratio.
+//
+// Why 8x and not a smaller multiple: the Tengen sprites have a 3-tone
+// bevel and a 1px outline, and a low logical resolution forces those
+// bevel bands to collapse into flat pixel mush when scaled up. The extra
+// headroom is what lets drawBlock shade edges with smooth gradients and
+// still land on integer device pixels at typical window sizes. All
+// LAYOUT numbers below are in this 2048x1920 space; App.tsx multiplies by
+// the window scale factor when positioning.
 export const LOGICAL_WIDTH = 2048;
 export const LOGICAL_HEIGHT = 1920;
 
@@ -14,10 +37,26 @@ export const FONT_SMOOTH =
 // Layout measured proportionally from the owner's Tengen captures
 // (png/screenshot_05..27): playfield on the left, NEXT preview and
 // readouts on the right, all in logical units (never raw window pixels).
+//
+// How to read it: every panel records its top-left origin (x, y) in the
+// 2048x1920 logical space plus the sizes it needs. Components multiply
+// these by the current window `scale` for CSS positioning; the canvas
+// painters draw in raw logical units and let logicalCanvas() apply the
+// scale. Cell sizes are per-block squares in the same units.
 export const LAYOUT = {
+  // The 10x20 playfield. The double frame around it is drawn by Board.tsx:
+  // `frameOuter` is the dark-blue band's thickness and `frameInner` the
+  // light-blue one's, so the visible frame is (12 + 8) = 20 logical px
+  // thick on every side and the cells start at origin x+20, y+20.
   playfield: { x: 144, y: 120, cols: 10, rows: 20, cell: 84, frameOuter: 12, frameInner: 8 },
+  // The NEXT box: 400x224 with 56-px preview cells (smaller than playfield
+  // cells on purpose — the preview is decorative, not playable).
   next: { x: 1120, y: 176, boxW: 400, boxH: 224, cell: 56, labelSize: 40 },
+  // Four readout rows (SCORE/HIGH SCORE/LINES/LEVEL), 136 px apart so the
+  // label bar + value stack never collides with the next row.
   score: { x: 1120, y: 480, rowHeight: 136, labelSize: 40, valueSize: 52 },
+  // The stats histogram: 16-px glyphs, 28-px bars, 560 px of bar height
+  // shared by all seven columns with a 6-px pitch between columns.
   stats: { x: 1120, y: 1104, titleSize: 48, cell: 16, barWidth: 28, barHeight: 560, gap: 6 },
 };
 
@@ -66,6 +105,9 @@ export const TITLE_PROMPT_SIZE = 52;
 // edges, mid body, on a 1px black outline.
 // ---------------------------------------------------------------------------
 
+// The three tones of one block sprite, sampled from the captures. `mid`
+// is the body, `light` shades the top+right bevel edges and `dark` the
+// left+bottom ones — see drawBlock() for how they are painted.
 export interface BlockTrio {
   light: string;
   mid: string;
@@ -123,6 +165,17 @@ export const OVERLAY_DIM = "rgba(0, 0, 0, 0.72)";
 // glyphs. Offsets are (x, y) cell coordinates; the rotation states match
 // core/tetris_core/pieces.py (source of truth). The stats minis reproduce
 // the exact orientations seen in the captures' stats panel.
+//
+// WHY A COPY, AND NOT pieces.py's LIVE TABLE
+// ------------------------------------------
+// The UI would need to import from Python to reuse the core's table, and
+// the preview is render-only — it must never drift into computing rules.
+// So these four-cell lists are a frozen snapshot of each piece's spawn
+// orientation (x grows right, y grows down). If pieces.py ever changes a
+// shape, this table must be updated by hand; the duplication is deliberate
+// to keep the dependency direction one-way (core -> UI, never UI -> core).
+// Consumers (NextPreview, StatsPanel) re-center the cells by their min/max
+// bounds, so the absolute offset origin does not matter.
 export const DISPLAY_SHAPES: Record<string, [number, number][]> = {
   I: [
     [1, 0],

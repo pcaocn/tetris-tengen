@@ -16,8 +16,29 @@ import { drawBlock, logicalCanvas } from "./draw";
 
 const KINDS: readonly string[] = STATS_ORDER;
 
+// ============================================================
+// WHAT THIS COMPONENT DOES
+// ============================================================
+// Per-piece spawn counters (spec 4.9), as a histogram: one column per
+// piece kind, the piece's mini glyph at the bottom and a vertical bar
+// above it that grows with the count. The counts arrive in
+// `state.stats` (a {kind: count} record) straight from the Python core —
+// this panel only divides by STATS_BAR_MAX to size the fill.
+//
+// Why a histogram and not seven numbers: it mirrors the original game's
+// stats screen and makes the RNG distribution visible at a glance — a
+// rigged-feeling drought of I pieces shows as a short bar.
+
+// -- One histogram column's bottom piece ----------------------------------
 // Mini piece glyph in its own three-tone color. The canvas is trimmed to
 // the piece's bounds so the columns sit compactly.
+//
+// WHY A SEPARATE COMPONENT PER GLYPH: each glyph is its own small canvas
+// (React keys the seven of them by kind), so a count change re-renders the
+// bar divs but the glyph canvases only repaint when their kind/cell/scale
+// change — the deps below. Trimming: the canvas is sized to the piece's
+// bounding box (+8px breathing room, 4px on each side) instead of a fixed
+// 4x4 grid, so a 1-wide I doesn't carry three empty columns.
 function MiniGlyph({ kind, cell, scale }: { kind: string; cell: number; scale: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -41,10 +62,16 @@ function MiniGlyph({ kind, cell, scale }: { kind: string; cell: number; scale: n
   return <canvas ref={ref} />;
 }
 
+// -- The panel itself ------------------------------------------------------
 // Per-piece spawn counters (spec 4.9). Owner decision 2026-10-24, per the
 // captures: one column per piece — the glyph at the bottom and a vertical
 // bar above it that grows upward with the count, with a horizontal tick
 // every 5 pieces (full at 50).
+//
+// (The tick spacing/full-at value above is the original note; the shipped
+// constants are every 10 pieces, full at 120 — see STATS_TICK_EVERY /
+// STATS_BAR_MAX in theme.ts, raised 2026-10-25 so the bars fill slowly
+// across a whole game rather than maxing out by level 5.)
 export function StatsPanel({
   state,
   scale,
@@ -54,6 +81,12 @@ export function StatsPanel({
 }) {
   const { x, y, titleSize, cell, barWidth, barHeight, gap } = LAYOUT.stats;
   const stats = state?.stats ?? {};
+  // The tick marks: built once per render as a list of absolutely
+  // positioned hairlines, then included inside EVERY bar's track below
+  // (the same array instance is reused — they are stateless divs, so
+  // sharing is safe and React reconciles them by key).
+  // `bottom: (t / MAX) * 100%` places tick t proportionally up the track,
+  // so a tick always means "this many pieces" regardless of bar height.
   const ticks: ReactNode[] = [];
   for (let t = STATS_TICK_EVERY; t <= STATS_BAR_MAX; t += STATS_TICK_EVERY) {
     ticks.push(
@@ -99,6 +132,8 @@ export function StatsPanel({
         }}
       >
         {KINDS.map((kind) => {
+          // Unknown kinds (a new piece added core-side) read as 0; a count
+          // beyond the max is clamped so the fill never exceeds 100%.
           const count = stats[kind] ?? 0;
           const fill = Math.min(count, STATS_BAR_MAX) / STATS_BAR_MAX;
           // Fixed-height glyph area under every bar so all bars align at
@@ -131,6 +166,9 @@ export function StatsPanel({
                   overflow: "hidden",
                 }}
               >
+                {/* The fill: anchored to `bottom`, so as `height` grows with
+                    the count the bar rises upward from the glyph — matching
+                    the original's upward-growing columns. */}
                 <div
                   style={{
                     position: "absolute",

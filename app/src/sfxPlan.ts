@@ -23,6 +23,22 @@ export type SfxPlanInput = {
   state: SfxContextState | null;
 };
 
+// ============================================================
+// THE FOUR CONTEXT STATES, AND WHAT EACH MEANS
+// ============================================================
+//   "running"     -- healthy; play.
+//   "suspended"   -- the browser parked it (autoplay policy). It is NOT
+//                    broken: a user gesture is wanted, and App.tsx's kick
+//                    handler resumes it on the next key/click.
+//   "interrupted" -- WebKit's state after the OS took the audio route
+//                    (phone call, another app). A resume usually does
+//                    NOT revive it; plan for a rebuild.
+//   "closed"      -- explicitly closed; must never be reused.
+//
+// The plan types force the caller to handle all of these; there is no
+// "silently try to play" path, which is exactly the bug this file exists
+// to prevent.
+
 export type SfxPlan =
   /** Create a context (there is none, or the old one is closed). */
   | { action: "create"; resume: boolean }
@@ -66,7 +82,17 @@ export function planSfx(input: SfxPlanInput): SfxPlan {
   return { action: "resume", then: "rebuild" };
 }
 
-/** The state a context reports once a resume has been attempted. */
+/**
+ * The second half of the resume handshake: called with the state the
+ * context reports AFTER a resume was attempted. App.tsx consults this
+ * because `resume()` resolves even when it did nothing — the only
+ * reliable answer is the state it leaves behind.
+ *
+ * "running"  -> the resume worked; play.
+ * "suspended"-> still gesture-blocked; leave it for the kick handler.
+ * "closed"   -> replaced (create).
+ * anything else (still "interrupted") -> the resume failed, rebuild.
+ */
 export function afterResume(state: SfxContextState): SfxPlan {
   if (state === "running") return { action: "use" };
   if (state === "suspended") return { action: "resume", then: "use" };

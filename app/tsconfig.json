@@ -1,1 +1,68 @@
-{"compilerOptions": {"target": "ES2021", "useDefineForClassFields": true, "lib": ["ES2021", "DOM", "DOM.Iterable"], "module": "ESNext", "skipLibCheck": true, "moduleResolution": "bundler", "allowImportingTsExtensions": true, "resolveJsonModule": true, "isolatedModules": true, "noEmit": true, "jsx": "react-jsx", "strict": true, "noUnusedLocals": true, "noUnusedParameters": true, "noFallthroughCasesInSwitch": true}, "include": ["src"]}
+{
+  // ============================================================
+  // WHAT THIS FILE DOES
+  // ============================================================
+  // The TypeScript compiler settings for the React front end.
+  // `npm run typecheck` runs `tsc --noEmit` with this file, so it
+  // type-checks the whole app WITHOUT emitting any JavaScript --
+  // Vite does the actual transpiling and bundling.
+  //
+  // TypeScript reads JSONC, so these `//` comments are legal here
+  // (they are NOT legal in app/package.json, which npm parses as
+  // strict JSON).
+
+  "compilerOptions": {
+    // ES2021 is the language level: modern enough for optional
+    // chaining and nullish coalescing, which the code uses.
+    "target": "ES2021",
+    // Emit `[[Set]]` accessors as class fields rather than as
+    // assignments in the constructor -- the modern class-fields
+    // semantics.
+    "useDefineForClassFields": true,
+    // The browser APIs the app can use. "DOM.Iterable" adds the
+    // iterator methods on collections (NodeList, etc.).
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    // ES modules, with "bundler" resolution: Vite resolves the
+    // extensionless imports ("../theme") and the "?url" asset
+    // imports (declared in src/vite-env.d.ts).
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Do not type-check the contents of node_modules -- third-party
+    // declaration files are not our problem and often disagree with
+    // each other.
+    "skipLibCheck": true,
+    // Allow importing "./file.ts" with the extension spelled out.
+    "allowImportingTsExtensions": true,
+    // Allow `import data from "./data.json"` to type-check.
+    "resolveJsonModule": true,
+    // Require every file to be independently transpilable (Vite
+    // transpiles file by file), which forbids constructs that need
+    // cross-file type information.
+    "isolatedModules": true,
+    // Type-check only: this project never emits .js from tsc.
+    "noEmit": true,
+    // The new JSX transform, so React does not need to be imported
+    // in every .tsx file.
+    "jsx": "react-jsx",
+
+    // ----------------------------------------------------------
+    // Strictness
+    // ----------------------------------------------------------
+    // Every strict-family check. These are the ones that actually
+    // catch bugs in this codebase, because the front end handles a
+    // lot of nullable data from the core (music_track, autopilot,
+    // current piece, ...).
+    "strict": true,
+    // Fail on unused imports and unused local variables -- catches
+    // the leftovers that survive a refactor.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // Fail on a switch case that falls through without a break.
+    "noFallthroughCasesInSwitch": true
+  },
+
+  // Only the app's own sources are type-checked. The `scripts/`
+  // folder (the audio/sfx plan tests) is run directly by node, not
+  // compiled by this project.
+  "include": ["src"]
+}

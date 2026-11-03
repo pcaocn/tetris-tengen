@@ -12,14 +12,32 @@ import {
 import { drawSaintBasilsScene } from "./cathedral";
 import { logicalCanvas } from "./draw";
 
+// ============================================================
+// WHAT THIS COMPONENT DOES
+// ============================================================
+// The title screen (spec 5): gold bands with green diamond studs, the
+// full-screen double frame, the cathedral vector scene, the red italic
+// TETRIS wordmark, and the blinking PRESS ENTER prompt. It is a pure
+// function of (scale, cheat) — no state, no listeners; the keyboard that
+// drives it (Enter -> options, the Konami sequence) lives in App.tsx.
+//
+// The scene art is one canvas; everything else is styled divs. The bands
+// and frame are rectangles, so DOM is simpler than canvas paths there.
 const SCENE_W = 1960;
 const SCENE_H = 1476;
+// Scene canvas size in logical units — slightly SMALLER than the full
+// 2048x1920 screen so it slides inside the double frame with a margin;
+// TitleScreen positions it at (44, 44) inside the frame area.
 
 // The cathedral scene fills the inner frame area of the title screen,
 // adapted from the owner's reference render (png/Saint_Basil's_
 // Cathedral_render.ts), scaled to the canvas. When the cheat code has
 // been entered, the scene redraws with the central tent tower's tip dome
 // in green — the cheat indicator (owner request 2026-10-25).
+//
+// `cheat` is threaded all the way down to drawCentralTentTower, which
+// picks the dome color from it. That is why this is a prop and not CSS:
+// the recolor happens inside the vector drawing, not on a DOM node.
 function SceneArt({ scale, cheat }: { scale: number; cheat?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -38,7 +56,15 @@ function SceneArt({ scale, cheat }: { scale: number; cheat?: boolean }) {
 
 // Big red italic TETRIS wordmark over the sky, as in the reference
 // capture (a red italic wordmark sits above the cathedral).
+//
+// The "red" is a vertical gradient from the I-piece's light tone to its
+// dark tone (FALLING_COLORS.I), clipped to the letterforms via the
+// background-clip: text + transparent color trick. Original Tengen had a
+// solid 3D wordmark; this is the owner's stylized stand-in (no original
+// artwork copied, spec 1 non-goals).
 function Logo({ scale }: { scale: number }) {
+  // 170 logical px tall, x1.3 line box so the italic ascenders/descenders
+  // are not clipped by the flex row.
   const size = 170 * scale;
   return (
     <div
@@ -71,8 +97,18 @@ function Logo({ scale }: { scale: number }) {
 // cathedral scene, the red italic TETRIS wordmark, and a blinking PRESS
 // ENTER prompt. The introduction theme (01) plays; all menus moved to
 // the options page reached with Enter.
+/**
+ * Renders the full title screen. `cheat` recolors the cathedral's tip
+ * dome green once the Konami code has been entered — the only visible
+ * sign the cheats are armed.
+ */
 export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }) {
   const bandHeight = 48 * scale;
+  // The green diamond studs along the top and bottom gold bands: 13 of
+  // them, evenly spaced 150 logical px apart starting at x=80, each a
+  // 34px green square rotated 45deg (the cheap way to draw a diamond).
+  // 13 * 150 = 1950 logical px ≈ the full 2048 width, so the row spans
+  // the screen edge to edge.
   const diamonds = [];
   for (let i = 0; i < 13; i++) {
     const size = 34 * scale;
@@ -108,6 +144,8 @@ export function TitleScreen({ scale, cheat }: { scale: number; cheat?: boolean }
     >
       {band}
       <div style={{ position: "relative", flex: 1 }}>
+        {/* The double frame again (24/12/20 insets), same recipe as
+            OptionsScreen — dark band, light band, black interior. */}
         <div
           style={{ position: "absolute", inset: `${24 * scale}px`, background: FRAME_DARK }}
         />

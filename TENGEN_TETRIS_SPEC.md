@@ -103,14 +103,15 @@ Rules:
 
 ```
 tengen-tetris/
-  SPEC.md
+  TENGEN_TETRIS_SPEC.md      # this document
+  README.md                  # build/run instructions and the sweep workflow
   png/                       # owner's reference screenshots (read-only, see section 6.0)
   core/                      # Python package
     pyproject.toml
     tetris_core/
-      __main__.py            # stdin/stdout JSON-line loop
-      game.py                # state machine, frame update
-      board.py               # 10x20 grid, collision, line clear
+      __main__.py            # stdin/stdout JSON-line loop, 60 Hz frame loop
+      game.py                # state machine, frame update, autopilot execution
+      board.py               # 10x23 grid (20 visible + 3 hidden), collision, line clear
       pieces.py              # tetromino shapes and rotation states from the Tengen table
       gravity.py             # soft drop and level speed table
       scoring.py             # line clear bonuses
@@ -118,7 +119,13 @@ tengen-tetris/
       stats.py               # per-piece counters
       highscore.py           # read/write high score JSON
       protocol.py            # parse commands, build events
+      autopilot.py           # placement search + the two strategy profiles (section 4.11)
+    simulate_autopilot.py    # headless benchmark of one strategy
+    sweep_autopilot.py       # variant comparison over a shared seed set
+    analyze_frontier.py      # paired statistics for a sweep CSV
+    compare_autopilot.py     # side-by-side table of two benchmark CSVs
     tests/
+      helpers.py             # shared fixtures for the test files
       test_board.py
       test_pieces.py
       test_rotation.py
@@ -126,16 +133,24 @@ tengen-tetris/
       test_scoring.py
       test_rng.py
       test_game_flow.py
+      test_autopilot.py
   app/                       # Tauri project
-    src-tauri/               # Rust core
+    src-tauri/               # Rust core (spawns Python, routes commands/events)
     src/                     # React UI (TypeScript, Vite)
       main.tsx
-      components/            # Board, NextPreview, ScorePanel, StatsPanel, Overlay
+      App.tsx                # screen flow, key handling, cheat codes
+      components/            # Board, NextPreview, ScorePanel, StatsPanel, Overlay,
+                             # OptionsScreen, TitleScreen, cathedral.ts, draw.ts
       hooks/                 # useGameState
-      theme.ts
-      controls.ts
+      theme.ts               # logical resolution, palette, layout metrics
+      controls.ts            # the keyboard binding table
+      audioPlan.ts           # music-track state machine
+      sfxPlan.ts             # sound-effect / AudioContext lifecycle
+    scripts/                 # front-end tests (music state machine, SFX plan)
   assets/
     font/                    # open-licensed pixel font (section 6.3)
+  tools/                     # pixel-analysis scripts for the reference captures
+  stats/                     # saved benchmark CSVs and per-run results
 ```
 
 ---
@@ -208,15 +223,134 @@ tengen-tetris/
 
 - With the Konami cheat active, **End** selects strategy #1 and **Home** selects strategy #2; either key turns the autopilot off again, and switching keys switches strategies. Outside cheat mode neither key does anything. The mode persists across games. The UI shows `AUTO - QUICK CLEAR LINES` or `AUTO - HIGH SCORE` above the playfield while it drives.
 - The placement search (`core/tetris_core/autopilot.py`) enumerates every landing for the current piece, simulates the lock and line clears, and scores the result with published **El-Tetris** feature weights — landing height, cleared rows, row/column transitions, holes, well sums (one-piece lookahead). Pure functions; no game rules live there. Named "autopilot", not "AI": it is pure calculation.
-- **#1 "quick"** (End): clear lines as quickly as possible — the classic linear scoring; a single is as good as part of a tetris.
-- **#2 "highscore"** (Home): maximize score (owner request 2026-10-28) — defer 1-2 line clears while the stack is low and clean (a `defer_w` cost; holes or a tall stack waive it — survival first), score clears by their point value (a tetris is worth 25x a single), keep a well column (relaxed well weight) for I-piece tetrises, and let the stack build freely up to a knee before the landing-height cost rises.
 - Execution (`Game._autopilot_step`) is throttled to **human input speed** (owner correction 2026-10-28: "auto mode, not god mode"): one rotation or one lateral step per frame — the discrete key-press rate of tapping X or the arrows — while the piece descends at soft-drop speed through the normal gravity machinery (the Down-key rate). The plan is computed once per piece; a blocked step (or no legal placement at all) abandons the piece to fall naturally.
 - While the autopilot drives, human movement inputs are ignored; Enter (pause) still works. **The end-of-stage celebration is never skipped by the autopilot itself** — the celebration plays for its full window and the next level starts by itself (owner request 2026-10-29, section 5).
-- Protocol: `set_autopilot` command (`{"cmd": "set_autopilot", "mode": "quick" | "highscore" | null}`); the state event reports `"autopilot"`. Seeded benchmark (~111 min window, seed 42): quick cleared 4,328 lines (3 tetrises, 149 pts/line); highscore cleared 4,881 lines (95 tetrises, 234 pts/line) and was still playing.
-- **Board-fullness awareness** (owner request 2026-10-29): "reduce the aggressiveness when the board is getting fuller than half, that will reduce chance of early death, because when the board is half full it is difficult to recover." The "highscore" profile therefore blends its weights toward a set of *danger* weights as the stack rises past half full (`danger_h` 10 rows, `danger_span` 6 rows): the landing pull gets stronger, the free stacking allowance disappears, deep wells and buried holes are punished harder, and a flatness penalty (the sum of the height steps between neighbouring columns) stops a canyon from forming next to a tower — the well metric cannot see that shape, because a well needs *both* neighbours filled at that row. The profile was chosen on 400 held-out seeds (master seed 77777, 250k-frame budget): early deaths (fewer than 3000 lines) fell from 78/400 to 33/400 against the pre-2026-10-29 profile, with the median score within 1%. Headless benchmark scripts: `core/simulate_autopilot.py` (distribution over a seed set) and `core/sweep_autopilot.py` (variant comparison under one frame budget).
-- **Paired measurement** (2026-10-29): every sweep variant runs on the *same* seeds, so variant-to-variant comparison is paired — McNemar's exact test on the discordant seeds plus a paired bootstrap CI on the score deltas (`core/analyze_frontier.py`). Comparing two independent death rates is misleading: on 400 seeds, differences of 4-6 deaths sit at the noise floor, and one earlier apparent 6-death improvement tested at p = 0.36. Re-measured this way, the board-fullness change is **not** a trade of score for survival — it delivers both: 33/400 vs 78/400 early deaths (McNemar p < 0.0001, b/c = 69/24) *and* a mean score up 27,432 (95% CI [+9,944, +46,468]). A consequence for future work: candidate seeds must not be drawn from the set where the current profile dies — that screen is biased, and an earlier round built on it was a mirage.
-- **The score/survival tradeoff** (2026-10-29): the tradeoff lives on the *tetris-hunting* axis, not the board-fullness axis. `safe_h` decides when the strategy stops deferring small clears to hunt a tetris; on 400 seeds, `safe_h` 4 (barely defer) gives 12/400 early deaths at a mean score of 514,204, against 20/400 and 635,189 for the shipped `safe_h` 10 — 40% fewer early deaths for 19% less score. The score side of that trade is solid (paired delta −120,985, 95% CI [−131,952, −108,669]); the survival side is directional but underpowered at 400 seeds (McNemar p = 0.22) and would need ~1200-1600 seeds to resolve. Two decompositions explain the shape of the trade: a deferred piece is followed by a tetris within 12 pieces at the *same* rate as a non-deferred one (33.5% vs 30.5% measured in live games — the deferral is not buying extra tetrises, it is refusing points), and tetrises are only 13.6% of the score (doubles 40.1%, triples 27.3%, singles 14.5%, block bonuses 4.6%) even though the strategy is built around hunting them.
-- **Three further profile knobs, implemented but inert** (2026-10-29): `landing_credit` credits a placement for the stack height its own clear removes (the landing height is measured on the pre-lock board, so a tetris was charged the landing cost of four rows it had just deleted — a modelling bug rather than a tuning choice); `defer_well` holds back a small clear only when a big one is actually reachable (a one-column well at least `defer_well` deep — measured live to fire on 42%/16%/6% of decisions at thresholds 2/3/4, so it is not inert); and `defer_max` caps the size of a clear still worth refusing (a single is worth 100 points and a double 400, so refusing a double to chase a 2500-point tetris is a worse bet than refusing a single). All three default to the behaviour of the validated profile, so the shipped strategy is unchanged; they await the measurement that would justify enabling one.
+- Protocol: `set_autopilot` command (`{"cmd": "set_autopilot", "mode": "quick" | "highscore" | null}`); the state event reports `"autopilot"`.
+
+#### 4.11.1 How the placement search works
+
+Both strategies use the **same** search; only the weights differ.
+
+For the piece that is about to fall, the search tries every legal placement — each of the four rotation states, at every column where the piece fits — and for each candidate it:
+
+1. **Simulates the drop.** The piece is lowered straight down at that column until it comes to rest (`_resting_cells`). This simplified drop ignores the lock delay and the DAS; it only answers "where would it land?".
+2. **Simulates the lock and the clears.** The piece is written into a *copy* of the board, and any completed rows are removed and everything above them shifted down (`_lock`). The live board is never touched.
+3. **Measures the resulting board** (`_score`), producing these El-Tetris features:
+   - **Landing height** — the average height of the piece's resting cells, measured on the *pre-lock* board.
+   - **Cleared rows** and **clear points** — how much was cleared, and what the Tengen award table pays for it (single 100, double 400, triple 900, tetris 2500).
+   - **Row transitions** — how many times a row alternates between empty and filled (the walls count as filled). A jagged surface has many; a flat one has none.
+   - **Column transitions** — the same idea vertically (the floor counts as filled). This is what punishes overhangs and buried gaps.
+   - **Holes** — empty cells buried under the stack. These can never be filled again, so they are permanent damage and the most heavily punished feature.
+   - **Well sums** — the depth of single-column gaps flanked by filled cells, charged quadratically (a depth-4 well costs 10). A *shallow* well is good: it is the pocket an I-piece later fills for a tetris. A *deep* well is a trap.
+4. **Combines them linearly** into one number with the strategy's weight profile, and keeps the highest-scoring candidate.
+
+There are at most 4 rotations x 10 columns = 40 candidates per piece, so the search is cheap — but it is still run **once per piece**, not once per frame.
+
+#### 4.11.2 Strategy #1 "quick" — clear lines as fast as possible
+
+Selected with **End**; the UI shows `AUTO - QUICK CLEAR LINES`.
+
+The classic linear El-Tetris objective: **clear lines as quickly as possible**. A single is worth exactly as much as one row of a tetris.
+
+| Weight | Value | Effect |
+| --- | --- | --- |
+| `lines_w` | +3.418 | Every cleared row earns the same amount. |
+| `landing_w` | −4.500 | Landing high is bad, at the published El-Tetris rate. |
+| `landing_free` | 0 | Every row of landing height costs; there is no free stacking band. |
+| `points_w` | 0 | The *value* of a clear is ignored — only its size counts. |
+| `defer_w` | 0 | Never refuses a clear. |
+| `safe_h` | 0 | No deferral, so no stack-height threshold either. |
+| `well_w` | −3.386 | Published well penalty; deep wells are punished. |
+| `holes_w` | −7.899 | Published hole penalty. |
+
+**What it looks like in play:** the stack is kept low and flat, lines are cleared the moment they are available, and it does not care whether a clear was a single or a tetris. Because the objective is line *rate*, it clears many lines cheaply.
+
+**Measured** (seeded benchmark: seed 42, 399,600 frames = 111 minutes at 60 Hz): **4,326 lines** cleared, **3 tetrises**, **149 points per line**.
+
+That is a single seed at a fixed window: enough to show the *shape* of the strategy, not enough to compare two strategies. Comparing strategies needs the paired sweep (4.11.5).
+
+**Measured over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-quick-100games.csv`): **31,943 lines** and **11.9 tetrises** per game on average, **148 points per line**, and **0/100 early deaths**. The quick strategy never dies early: it keeps the stack low enough that the board is never a threat, which is why it survives to the frame cap in every run.
+
+#### 4.11.3 Strategy #2 "highscore" — maximize the score
+
+Selected with **Home**; the UI shows `AUTO - HIGH SCORE`.
+
+Maximizes score rather than line rate. Because the Tengen award table is strongly super-linear (a tetris pays 25x a single), the strategy is built around **hunting tetrises and triples** and refusing the small clears that would get in their way.
+
+| Weight | Value | Effect |
+| --- | --- | --- |
+| `points_w` | +1.0 | Clears are paid by their **point value** (1/4/9/25 per 100 points), so a tetris is worth 25x a single. |
+| `lines_w` | 0 | No flat per-row payment while the stack is safe — size alone does not earn. |
+| `defer_w` | 25.0 | The cost of **refusing** a 1–2 line clear while the stack is safe and clean. |
+| `safe_h` | 10 | At or above this stack height (the tallest column) the deferral is waived — survival first. |
+| `landing_free` | 4.0 | Stacking below 4 rows is **free**; the stack may build up a little without cost. |
+| `landing_w` | −4.500 | Above the free band, landing high is charged at the published rate. |
+| `well_w` | −2.0 | **Relaxed** (half the published −3.386): the strategy *needs* a well column to hold for the I-piece. Roofing a well must never pay, but holding one open is intended. |
+| `holes_w` | −12.0 | **Extra caution**: buried wells are catastrophic, so holes are punished harder than in the published weights. |
+
+**The deferral rule.** A placement that clears 1 or 2 rows is charged the `defer_w` cost — so the strategy has to be *convinced* the small clear is not worth taking — but only when all of these hold: the stack is below `safe_h` (10 rows), there are **no holes** anywhere, and the board is not yet dangerous. As soon as the stack grows, holes appear, or the danger ramp engages, the deferral is waived and the strategy takes every clear it can get.
+
+**What it looks like in play:** the stack is allowed to build up to about ten rows; a single column is kept open as a well; small clears are refused in the hope that an I-piece or a triple follows; and when the stack approaches the ceiling the behaviour changes completely — see below.
+
+**Measured** (same seed and window as the quick strategy): **4,881 lines** cleared, **56 tetrises**, **217 points per line** — roughly **16x** the tetris rate of the quick strategy (11.5 vs 0.7 tetrises per 1,000 lines), for 13% more lines.
+
+> **Why this number is lower than earlier revisions of this spec.** An earlier revision quoted 95 tetrises and 234 points per line for the same seed and window. The 2026-10-29 board-fullness ramp (4.11.4) deliberately changed the strategy's behaviour once the stack fills: it stops holding a well open for an I-piece and starts taking the small clears it was previously refusing. That is the same change that bought the early-death improvement below, and it costs tetris rate. The numbers above are the ones the shipped code produces today.
+
+**Measured over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-highscore-100games.csv`): **25,941 lines** and **308.6 tetrises** per game on average, **218 points per line**, and **6/100 early deaths**.
+
+The two strategies answer different questions, and the 100-game table shows the trade-off plainly:
+
+| | quick ("End") | highscore ("Home") |
+| --- | --- | --- |
+| Score per game (mean) | 4,726,478 | **5,666,758** |
+| Lines per game | **31,943** | 25,941 |
+| Tetrises per game | 11.9 | **308.6** |
+| Points per line | 148 | **218** |
+| Early deaths (died under 3,000 lines) | **0/100** | 6/100 |
+
+The quick strategy wins on raw line count and never dies; the high-score strategy earns **47% more points per line** and lands **26x** as many tetrises, at the cost of dying sometimes and clearing 19% fewer lines. Because a tetris pays 25x a single, the high-score strategy still posts a **higher score per game** (+20% on the mean, +60% on the median) — that is the whole point of the mode.
+
+#### 4.11.4 Board-fullness awareness (the "danger" ramp)
+
+Owner request 2026-10-29: *"reduce the aggressiveness when the board is getting fuller than half, that will reduce chance of early death, because when the board is half full it is difficult to recover."*
+
+The "highscore" profile therefore **blends its weights** toward a set of *danger* weights as the stack rises. The blend factor runs from 0.0 (safe) to 1.0 (fully dangerous) over `danger_h` = 10 rows and `danger_span` = 6 rows, so the strategy is fully in survival mode at a stack height of 16 rows. The danger level is measured on the board **before** the candidate placement, so every candidate is judged in the same context and the comparison stays fair.
+
+| Weight | Safe value | Danger value | Effect at full danger |
+| --- | --- | --- | --- |
+| `landing_w` | −4.500 | **−14.0** | A much stronger pull toward low landings. |
+| `landing_free` | 4.0 | **0.0** | The free stacking allowance disappears. |
+| `well_w` | −2.0 | **−14.0** | Stop holding a deep well open — a well plus a tower is how the board dies. |
+| `holes_w` | −12.0 | **−32.0** | Buried holes are fatal when the board is full. |
+| `points_w` | 1.0 | 1.0 | Clears stay worth their point value. |
+| `flat_w` | 0.0 | **−8.0** | A flatness penalty: the sum of the height steps between neighbouring columns. |
+
+**Why the flatness penalty exists.** A deep canyon next to a tall tower is the death shape, and the **well metric cannot see it** — a well needs *both* neighbours filled at that row, and in a canyon one neighbour is empty. The flatness term measures the surface roughness directly, so it catches the shape the well term misses.
+
+**Measured** on 400 held-out seeds (master seed 77777, 250k-frame budget): early deaths (fewer than 3000 lines) fell from **78/400 to 33/400** against the pre-2026-10-29 profile, with the median score within 1%.
+
+#### 4.11.5 Measurement rules
+
+The autopilot strategies are tuned with a headless sweep, and the rules below are what make the numbers trustworthy:
+
+- **Headless benchmark scripts.** `core/simulate_autopilot.py` (distribution over a seed set, one strategy) and `core/sweep_autopilot.py` (variant comparison under one frame budget). `core/analyze_frontier.py` performs the paired statistical test; `core/compare_autopilot.py` prints a plain side-by-side table. All of them run the real `Game` and the real autopilot code — only the 60 Hz sleep between frames is removed, so a headless score is a score the app could really produce. The commands are documented in the README section "Autopilot sweep".
+- **The same seeds for every variant.** Every sweep variant plays an identical seed list, so variant-to-variant comparison is **paired** — McNemar's exact test on the discordant seeds plus a paired bootstrap CI on the score deltas. Comparing two independent death rates is misleading: on 400 seeds, differences of 4–6 deaths sit at the noise floor, and one earlier apparent 6-death improvement tested at p = 0.36. Re-measured the paired way, the board-fullness change is **not** a trade of score for survival — it delivers both: 33/400 vs 78/400 early deaths (McNemar p < 0.0001, b/c = 69/24) *and* a mean score up 27,432 (95% CI [+9,944, +46,468]). The 400-seed figures above were measured with `--master-seed 77777`; a sweep on the default master seed (11111) draws a different seed list and is a different — equally valid, but not comparable — sample, so the master seed is quoted alongside every published number.
+- **Candidate seeds must not be drawn from the set where the current profile dies.** That screen is biased, and an earlier round built on it was a mirage.
+- **Never judge on one seed.** A single run is luck; use ≥ 400 seeds and the paired test before believing any change.
+
+#### 4.11.6 The score/survival tradeoff
+
+The tradeoff lives on the *tetris-hunting* axis, not the board-fullness axis. `safe_h` decides when the strategy stops deferring small clears to hunt a tetris; on 400 seeds, `safe_h` 4 (barely defer) gives 12/400 early deaths at a mean score of 514,204, against 20/400 and 635,189 for the shipped `safe_h` 10 — 40% fewer early deaths for 19% less score. The score side of that trade is solid (paired delta −120,985, 95% CI [−131,952, −108,669]); the survival side is directional but underpowered at 400 seeds (McNemar p = 0.22) and would need ~1200–1600 seeds to resolve.
+
+Two decompositions explain the shape of the trade: a deferred piece is followed by a tetris within 12 pieces at the *same* rate as a non-deferred one (33.5% vs 30.5% measured in live games — **the deferral is not buying extra tetrises, it is refusing points**), and tetrises are only 13.6% of the score (doubles 40.1%, triples 27.3%, singles 14.5%, block bonuses 4.6%) even though the strategy is built around hunting them.
+
+#### 4.11.7 Three further profile knobs, implemented but inert
+
+- **`landing_credit`** credits a placement for the stack height its own clear removes. The landing height is measured on the pre-lock board, so a tetris was charged the landing cost of four rows it had just deleted — a modelling bug rather than a tuning choice.
+- **`defer_well`** holds back a small clear only when a big one is actually reachable (a one-column well at least `defer_well` deep — measured live to fire on 42%/16%/6% of decisions at thresholds 2/3/4, so it is not inert).
+- **`defer_max`** caps the size of a clear still worth refusing. A single is worth 100 points and a double 400, so refusing a double to chase a 2500-point tetris is a worse bet than refusing a single.
+
+All three default to the behaviour of the validated profile, so the shipped strategy is unchanged; they await the measurement that would justify enabling one.
 
 ---
 
