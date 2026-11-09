@@ -31,7 +31,7 @@ edition = "2021"
 # permission scaffolding into OUT_DIR, so the `tauri::` macros in
 # main.rs have real code behind them.
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 # ------------------------------------------------------------
 # Runtime dependencies
@@ -39,7 +39,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `tauri` -- the window, the webview, the IPC layer, and the
 # plugin/permission machinery.
-tauri = { version = "2", features = [] }
+tauri = { version = "2.12", features = [] }
 # `serde` with the derive feature -- the #[derive(Serialize)] /
 # #[derive(Deserialize)] on the shell's own message structs.
 serde = { version = "1", features = ["derive"] }
