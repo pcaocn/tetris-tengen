@@ -22,6 +22,8 @@ Three layers:
 
 from __future__ import annotations
 
+import pytest
+
 from tetris_core.game import (
     CLEAR_ANIM_FRAMES,
     Game,
@@ -305,12 +307,12 @@ def test_nonzero_start_uses_its_own_stage_length(tmp_path):
     assert game.score == placement_points(5, False, 0) + points_for_clear(1)
 
 
-def test_placement_uses_lowest_cell_and_soft_drop(tmp_path):
+def test_placement_uses_lowest_cell(tmp_path):
     """Placement row height is the piece's lowest occupied cell.
 
     A vertical I resting with its bottom cell on row 21 has height 1
     (the bottom visible row is 0), so a normal level-0 placement earns
-    2 points. Holding Down doubles it.
+    2 points.
     """
     game = make_game(tmp_path)
     game._piece_kind = Piece.I
@@ -320,14 +322,91 @@ def test_placement_uses_lowest_cell_and_soft_drop(tmp_path):
     game._lock()
     assert game.score == placement_points(0, False, 1)
 
-    game2 = make_game(tmp_path)
-    game2._piece_kind = Piece.I
-    game2._rot = 0
-    game2._piece_x = 4
-    game2._piece_y = 22  # bottom row -> h = 0
-    game2._soft_drop = True
-    game2._lock()
-    assert game2.score == placement_points(0, True, 0)
+
+def _run_until_first_contact(game, max_frames: int = 1000) -> None:
+    """Run the real update loop until the piece first rests on something."""
+    for _ in range(max_frames):
+        if game._rest_frames > 0:
+            return
+        game.update()
+    raise AssertionError("piece never made contact")
+
+
+def _run_until_lock(game, max_frames: int = 50) -> None:
+    """Run the real update loop through the lock-delay window."""
+    for _ in range(max_frames):
+        game.update()
+        if game.lock_count > 0:
+            return
+    raise AssertionError("piece never locked")
+
+
+@pytest.mark.parametrize(
+    ("hold_at_contact", "action_during_lock", "expected"),
+    [
+        (True, "release", 2),
+        (True, "keep", 2),
+        (False, "press", 1),
+        (False, "keep", 1),
+    ],
+)
+def test_soft_drop_captured_at_first_contact(
+    tmp_path, hold_at_contact, action_during_lock, expected
+):
+    """Placement points use the drop state at contact, not at lock.
+
+    This exercises the real update loop and input actions. Down may be
+    released during the lock delay; the piece still earns the soft-drop
+    award if Down was held when it first touched down.
+    """
+    game = make_game(tmp_path, pieces=(Piece.O, Piece.T))
+    if hold_at_contact:
+        game.handle_input("soft_drop_on")
+
+    _run_until_first_contact(game)
+    assert game._landing_soft_drop is hold_at_contact
+
+    if action_during_lock == "release":
+        game.handle_input("soft_drop_off")
+    elif action_during_lock == "press":
+        game.handle_input("soft_drop_on")
+
+    score_before_lock = game.score
+    _run_until_lock(game)
+    assert game.score == score_before_lock + expected
+    # The next piece starts with a fresh landing state even if Down is
+    # still physically held.
+    assert game._landing_soft_drop is False
+
+
+def test_soft_drop_capture_resets_after_sliding_off_ledge(tmp_path):
+    """A ledge slide starts a new landing opportunity.
+
+    Land on a raised block with Down held, release Down, slide into open
+    space, then land on the floor. The final landing must earn 1 point,
+    not the earlier soft-drop award.
+    """
+    game = make_game(tmp_path, pieces=(Piece.I, Piece.O))
+    game.board.lock_cells([(5, 21)], 6)
+
+    game.handle_input("soft_drop_on")
+    _run_until_first_contact(game)
+    assert game._piece_y == 20  # resting on the block
+    assert game._landing_soft_drop is True
+
+    game.handle_input("soft_drop_off")
+    for _ in range(4):
+        game.handle_input("left")
+    # The piece is now over open space; one update detects airborne and
+    # clears the captured landing state.
+    game.update()
+    assert game._landing_soft_drop is False
+
+    _run_until_first_contact(game)
+    assert game._landing_soft_drop is False
+    score_before_lock = game.score
+    _run_until_lock(game)
+    assert game.score == score_before_lock + 1
 
 
 def test_tetris_clear_awards_2500(tmp_path):

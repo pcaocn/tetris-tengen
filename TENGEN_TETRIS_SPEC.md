@@ -197,7 +197,7 @@ Source: TetrisWiki, "Tetris (NES, Tengen)" gravity table. Open item: the exact s
 ### 4.5 Line clears, scoring, and levels
 
 - **Placement points** are awarded exactly once per lock, including locks that clear nothing. Use the level and drop state at landing, before any stage advance:
-  `min(d * r * (r + h), 999)` where `r = level + 1`, `d = 2` for a soft-drop landing and `1` otherwise, and `h` is the height of the piece's **lowest occupied cell**, counted from 0 on the bottom visible row. The lowest-cell mapping is the disassembly's bitmap-scan behavior (`main.asm` L8658-L8692 keeps the last occupied cell before L9A47 adds it to the level term). Source: TetrisWiki, "Tetris (NES, Tengen)".
+  `min(d * r * (r + h), 999)` where `r = level + 1`, `d = 2` for a soft-drop landing (Down held at first contact, even if released during the lock delay) and `1` otherwise, and `h` is the height of the piece's **lowest occupied cell**, counted from 0 on the bottom visible row. The lowest-cell mapping is the disassembly's bitmap-scan behavior (`main.asm` L8658-L8692 keeps the last occupied cell before L9A47 adds it to the level term). Source: TetrisWiki, "Tetris (NES, Tengen)".
 - **Clear awards** are single **100**, double **400**, triple **900**, tetris **2500** (`points_for_clear` in `scoring.py`). The award for each clear event is accumulated into a **pending stage award** and credited once, on stage completion. It is not paid immediately on every clear. The flat 300-point block bonus is removed. The immediate clear label **SINGLE / DOUBLE / TRIPLE / TETRIS** still appears while the rows wipe.
 - Line-clear animation (owner decisions 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and are wiped **from the center to both sides** — one column-pair every 4 frames (pairs {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; `WIPE_FRAMES_PER_PAIR` in `theme.ts`) — then the rows are removed and the next piece spawns after `CLEAR_ANIM_FRAMES` (24). The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the wipe and the label.
 - **Level curve and stage boundaries** (Tengen manual p. 9; TetrisWiki): stages are 30 lines for levels 0-4, then 50 lines for level 5 and above. The displayed level caps at 17. Stage boundaries are tracked independently of the displayed level, so 800, 850, ... still end stages and pay the pending award after the cap. For a normal game starting at 0: 30, 60, 90, 120, 150, 200, 250, ..., 750, 800, 850. A clear that overshoots a boundary completes exactly one stage if only one threshold is crossed (for example, a triple from 149 to 152 completes the level-4 stage and leaves the next boundary at 200).
@@ -256,6 +256,8 @@ For the piece that is about to fall, the search tries every legal placement — 
 
 There are at most 4 rotations x 10 columns = 40 candidates per piece, so the search is cheap — but it is still run **once per piece**, not once per frame.
 
+> **Historical measurements.** The benchmark numbers in sections 4.11.2–4.11.3 and the comparison summary were measured under the earlier gravity and scoring rules, before the Tengen update. They are kept to describe the archived CSVs and the earlier tuning record; they are not measurements of what the current ruleset produces.
+
 #### 4.11.2 Strategy #1 "quick" — clear lines as fast as possible
 
 Selected with **End**; the UI shows `AUTO - QUICK CLEAR LINES`.
@@ -275,11 +277,11 @@ The classic linear El-Tetris objective: **clear lines as quickly as possible**. 
 
 **What it looks like in play:** the stack is kept low and flat, lines are cleared the moment they are available, and it does not care whether a clear was a single or a tetris. Because the objective is line *rate*, it clears many lines cheaply.
 
-**Measured** (seeded benchmark: seed 42, 399,600 frames = 111 minutes at 60 Hz): **4,326 lines** cleared, **3 tetrises**, **149 points per line**.
+**Historical measurement** (seeded benchmark under the earlier rules: seed 42, 399,600 frames = 111 minutes at 60 Hz): **4,326 lines** cleared, **3 tetrises**, **149 points per line**.
 
 That is a single seed at a fixed window: enough to show the *shape* of the strategy, not enough to compare two strategies. Comparing strategies needs the paired sweep (4.11.5).
 
-**Measured over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-quick-100games.csv`): **31,943 lines** and **11.9 tetrises** per game on average, **148 points per line**, and **0/100 early deaths**. The quick strategy never dies early: it keeps the stack low enough that the board is never a threat, which is why it survives to the frame cap in every run.
+**Historical measurement over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-quick-100games.csv`): **31,943 lines** and **11.9 tetrises** per game on average, **148 points per line**. The archived quick-clear CSV records **0 early deaths before 3,000 lines**, **90 runs reaching the 3,000,000-frame cap**, and **10 later top-outs**. It does not show a strategy that never dies; it shows a strategy that survives the early game and can still top out later.
 
 #### 4.11.3 Strategy #2 "highscore" — maximize the score
 
@@ -302,13 +304,13 @@ Maximizes score rather than line rate. Because the Tengen award table is strongl
 
 **What it looks like in play:** the stack is allowed to build up to about ten rows; a single column is kept open as a well; small clears are refused in the hope that an I-piece or a triple follows; and when the stack approaches the ceiling the behaviour changes completely — see below.
 
-**Measured** (same seed and window as the quick strategy): **4,881 lines** cleared, **56 tetrises**, **217 points per line** — roughly **16x** the tetris rate of the quick strategy (11.5 vs 0.7 tetrises per 1,000 lines), for 13% more lines.
+**Historical measurement** (same seed and window as the quick strategy, under the earlier rules): **4,881 lines** cleared, **56 tetrises**, **217 points per line** — roughly **16x** the tetris rate of the quick strategy (11.5 vs 0.7 tetrises per 1,000 lines), for 13% more lines.
 
-> **Why this number is lower than earlier revisions of this spec.** An earlier revision quoted 95 tetrises and 234 points per line for the same seed and window. The 2026-10-29 board-fullness ramp (4.11.4) deliberately changed the strategy's behaviour once the stack fills: it stops holding a well open for an I-piece and starts taking the small clears it was previously refusing. That is the same change that bought the early-death improvement below, and it costs tetris rate. The numbers above are the ones the shipped code produces today.
+> **Why this number is lower than earlier revisions of this spec.** An earlier revision quoted 95 tetrises and 234 points per line for the same seed and window. The 2026-10-29 board-fullness ramp (4.11.4) deliberately changed the strategy's behaviour once the stack fills: it stops holding a well open for an I-piece and starts taking the small clears it was previously refusing. That is the same change that bought the early-death improvement below, and it costs tetris rate. The numbers above are historical measurements under the earlier ruleset, not measurements of the current post-update code.
 
-**Measured over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-highscore-100games.csv`): **25,941 lines** and **308.6 tetrises** per game on average, **218 points per line**, and **6/100 early deaths**.
+**Historical measurement over 100 games** (master seed 20261028, 3,000,000-frame cap — the shipped artifact `stats/autopilot-highscore-100games.csv`): **25,941 lines** and **308.6 tetrises** per game on average, **218 points per line**, and **6/100 early deaths**.
 
-The two strategies answer different questions, and the 100-game table shows the trade-off plainly:
+**Historical comparison (earlier gravity/scoring rules).** The two strategies answer different questions, and the archived 100-game table shows the trade-off plainly:
 
 | | quick ("End") | highscore ("Home") |
 | --- | --- | --- |
@@ -318,7 +320,7 @@ The two strategies answer different questions, and the 100-game table shows the 
 | Points per line | 148 | **218** |
 | Early deaths (died under 3,000 lines) | **0/100** | 6/100 |
 
-The quick strategy wins on raw line count and never dies; the high-score strategy earns **47% more points per line** and lands **26x** as many tetrises, at the cost of dying sometimes and clearing 19% fewer lines. Because a tetris pays 25x a single, the high-score strategy still posts a **higher score per game** (+20% on the mean, +60% on the median) — that is the whole point of the mode.
+The quick strategy wins on raw line count and had no early deaths before 3,000 lines; the archived quick-clear CSV records 90 runs reaching the frame cap and 10 later top-outs. The high-score strategy earns **47% more points per line** and lands **26x** as many tetrises, at the cost of dying sometimes and clearing 19% fewer lines. Because a tetris pays 25x a single, the high-score strategy still posts a **higher score per game** (+20% on the mean, +60% on the median) — that is the whole point of the mode.
 
 #### 4.11.4 Board-fullness awareness (the "danger" ramp)
 
@@ -475,6 +477,7 @@ Python (pytest), required before UI work starts:
 - **Scoring:** placement points and the 999 cap, clear awards accumulating into the pending stage award, stage payouts at 30/50-line boundaries, threshold overshoot, the level cap at 17, and the cheat-jump boundary.
 - **RNG:** determinism with a fixed seed, and the repeat behavior over a long sample.
 - **Game flow:** a scripted input sequence produces the expected board, score, and level. The tools runner is also tested with a pre-seeded player high-score file and must leave it byte-for-byte unchanged.
+- **Landing input:** Down held at first contact is captured for placement scoring even if released during the lock delay; sliding off a ledge starts a new landing; a fresh piece does not inherit the previous piece's landing state.
 
 Rust and UI:
 

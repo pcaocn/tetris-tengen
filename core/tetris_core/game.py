@@ -166,6 +166,7 @@ class Game:
         self._gravity_threshold = 0
         self._rest_frames = 0
         self._soft_drop = False
+        self._landing_soft_drop = False
         self._soft_held = 0
         self._das_dir = 0
         self._das_counter = 0
@@ -336,6 +337,9 @@ class Game:
             # moves the piece down one row when its counter expires; a
             # fresh window starts at the next landing.
             self._rest_frames = 0
+            # Falling resumed, so the previous landing's drop state no
+            # longer applies (for example after sliding off a ledge).
+            self._landing_soft_drop = False
             changed |= self._apply_gravity()
             if self._can_move(0, 1):
                 # Still airborne after gravity: nothing else to do this
@@ -346,6 +350,14 @@ class Game:
         # frame counts as the first resting frame). It keeps a grace window
         # of one gravity interval ("1 drop", spec 4.4): the player can still
         # move or rotate it until the window expires.
+        #
+        # Capture the drop state at FIRST contact only. Releasing Down
+        # during the lock delay must not erase the fact that Down was held
+        # when the piece landed. Slides along the floor and grounded
+        # rotations preserve this value; sliding off a ledge clears it in
+        # the airborne branch above and captures again at the next contact.
+        if self._rest_frames == 0:
+            self._landing_soft_drop = self._soft_drop
         self._rest_frames += 1
         if self._rest_frames > lock_delay_frames(self.level):
             # The window expired: freeze the piece into the board.
@@ -638,7 +650,9 @@ class Game:
         # height is the lowest occupied cell, with 0 on the bottom visible
         # row (the disassembly's bitmap-scan mapping).
         row_height = (HEIGHT - 1) - max(y for _, y in cells)
-        self.score += placement_points(self.level, self._soft_drop, row_height)
+        self.score += placement_points(
+            self.level, self._landing_soft_drop, row_height
+        )
         # There is no active piece until the next one spawns. During the
         # clear animation this is what makes the UI draw no piece.
         self._piece_kind = None
@@ -702,6 +716,9 @@ class Game:
         self._gravity_threshold = 0
         self._soft_held = 0
         self._rest_frames = 0
+        # A fresh piece has not landed yet; do not inherit the previous
+        # piece's soft-drop-at-contact state.
+        self._landing_soft_drop = False
         # The autopilot must plan again for the new piece (the board
         # changed, so the old plan is worthless).
         self._autopilot_plan = None  # replan for the new piece

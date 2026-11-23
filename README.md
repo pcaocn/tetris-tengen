@@ -38,19 +38,22 @@ sprites or artwork from the original game are used; music files in
   #2 (maximize score: defer small clears, keep a well, and hunt
   triples and tetrises). Both are pure calculation at human input speed
   — one rotation or one sideways step per frame, the same rate as a
-  player tapping the keys. On a seeded 111-minute benchmark (game
-  seed 42) the high-score strategy cleared 4,881 lines with 56
-  tetrises and 217 points per line, against 4,326 lines with 3
-  tetrises and 149 points per line for the quick one. Over a
-  100-game benchmark (the shipped CSVs in `stats/`) the high-score
+  player tapping the keys. **Historical benchmark (earlier gravity and
+  scoring rules):** on a seeded 111-minute benchmark (game seed 42)
+  the high-score strategy cleared 4,881 lines with 56 tetrises and
+  217 points per line, against 4,326 lines with 3 tetrises and 149
+  points per line for the quick one. **Historical 100-game benchmark**
+  (the shipped CSVs in `stats/`, same earlier ruleset): the high-score
   strategy averages 218 points per line and 309 tetrises per game
   against 148 points per line and 12 tetrises for the quick one —
   a higher score per game, at the price of 6 early deaths per 100
-  games where the quick strategy never dies early.
+  games. The quick strategy had 0 early deaths before 3,000 lines,
+  with 90 runs reaching the frame cap and 10 later top-outs.
   The high-score strategy also plays for survival once the board is more
   than half full — it stops hunting tetrises, keeps the surface flat and
-  clears lines whenever it can, which cut its early deaths from 78/400
-  to 33/400 on held-out seeds. Measured paired (every variant runs on
+  clears lines whenever it can. A historical 400-seed tuning sweep under
+  the same earlier ruleset cut its early deaths from 78/400 to 33/400 on
+  held-out seeds. Measured paired (every variant runs on
   identical seeds), that is 58% fewer early deaths *and* a higher
   mean score (+27,432, 95% CI [+9,944, +46,468]) — not a trade of
   one against the other. The remaining score/survival trade sits on
@@ -158,7 +161,7 @@ once and the next level starts by itself — no Enter needed.
 ## Development
 
 ```sh
-# Python core tests (227 tests)
+# Python core tests (232 tests)
 cd core && uv run pytest
 
 # Front-end type check, music state-machine test, and build
