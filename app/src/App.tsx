@@ -596,11 +596,26 @@ export default function App() {
       e.preventDefault();
       send(binding.up);
     };
+    // Focus loss may swallow the matching keyup (alt-tab, a file dialog,
+    // the window manager taking focus). Release every held-key latch so
+    // the core cannot keep auto-shifting or soft-dropping on return.
+    const releaseHeld = () => {
+      send("left_off");
+      send("right_off");
+      send("soft_drop_off");
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") releaseHeld();
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseHeld);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseHeld);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [pressStart, send]);
 

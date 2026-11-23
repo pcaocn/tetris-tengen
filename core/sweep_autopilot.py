@@ -8,6 +8,9 @@ accruing score; a run that survives scores for the whole budget. The
 headline metric is therefore "score in the first N frames", not "final
 score", which would be censored.
 
+TIMING NOTE: the 210-frame (3.5 s at 60 Hz) end-of-stage celebration is
+skipped, so the frame budget measures active play time.
+
 Usage:
     uv run python sweep_autopilot.py --seeds 100 --cap 250000
 
@@ -66,7 +69,7 @@ import random
 import statistics
 import sys
 
-from tetris_core import autopilot
+from tetris_core import autopilot, highscore
 from tetris_core.game import Game, Status
 from tetris_core.rng import PieceRNG
 
@@ -519,9 +522,9 @@ def run_one(job) -> dict:
     seed, profile, cap = job
     # Install this run's weights as THE highscore profile.
     autopilot.STRATEGIES["highscore"] = profile
-    # A fresh game on a seeded RNG: the same seed always produces the
-    # same piece sequence.
-    game = Game(rng=PieceRNG(seed))
+    # A fresh game on a seeded RNG with a private score sink: benchmark
+    # workers must not write the desktop player's top-five table.
+    game = Game(highscore_path=highscore.NO_SAVE, rng=PieceRNG(seed))
     game.set_autopilot("highscore")
 
     # Clear-type counters, derived from how the line count changes.
@@ -654,6 +657,7 @@ def main() -> None:
 
     print(f"Sweep: {len(variants)} variants x {args.seeds} seeds, "
           f"budget {args.cap:,} frames each")
+    print("Timing: active play frames; end-of-stage celebrations are skipped.")
     print(f"Seed master {args.master_seed}\n")
 
     rows: list[dict] = []

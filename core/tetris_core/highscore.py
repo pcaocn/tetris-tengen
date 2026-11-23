@@ -44,14 +44,32 @@ DEFAULT_PATH = (
 TABLE_SIZE = 5
 
 
-def _resolve(path: str | os.PathLike | None) -> Path:
+class _NoSave:
+    """Sentinel type for a score store that never touches disk."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_SAVE"
+
+
+# Headless benchmark workers pass this instead of the player's real
+# highscore file. Loads see an empty table and saves are discarded, so a
+# benchmark cannot overwrite the desktop app's leaderboard.
+NO_SAVE = _NoSave()
+
+
+def _resolve(path: str | os.PathLike | None | _NoSave) -> Path | None:
     """Work out which file to use.
 
-    Three levels of override, in priority order:
-      1. An explicit path argument (what the tests use).
-      2. The TETRIS_HIGHSCORE_PATH environment variable.
-      3. The default location in Application Support.
+    Four levels of override, in priority order:
+      1. NO_SAVE: a private sink for headless runs.
+      2. An explicit path argument (what the tests use).
+      3. The TETRIS_HIGHSCORE_PATH environment variable.
+      4. The default location in Application Support.
     """
+    if isinstance(path, _NoSave):
+        return None
     if path is not None:
         return Path(path)
     env = os.environ.get("TETRIS_HIGHSCORE_PATH")
@@ -60,13 +78,16 @@ def _resolve(path: str | os.PathLike | None) -> Path:
     return DEFAULT_PATH
 
 
-def load_table(path: str | os.PathLike | None = None) -> list[dict]:
+def load_table(path: str | os.PathLike | None | _NoSave = None) -> list[dict]:
     """The top-5 records, sorted by score descending.
 
     Returns [] when there is no file yet -- a missing file is the normal
     state on a fresh install, not an error.
     """
     file_path = _resolve(path)
+    if file_path is None:
+        # NO_SAVE: benchmark/headless workers get a private empty table.
+        return []
     try:
         data = json.loads(file_path.read_text(encoding="utf-8"))
         if "scores" in data:
@@ -94,13 +115,16 @@ def load_table(path: str | os.PathLike | None = None) -> list[dict]:
         return []
 
 
-def save_table(table: list[dict], path: str | os.PathLike | None = None) -> None:
+def save_table(table: list[dict], path: str | os.PathLike | None | _NoSave = None) -> None:
     """Write the table to disk, creating the folder if needed.
 
     Write errors are swallowed on purpose: failing to save a high score
     must never interrupt a game that is otherwise fine.
     """
     file_path = _resolve(path)
+    if file_path is None:
+        # NO_SAVE: benchmark workers must never write the player's table.
+        return
     try:
         # The Application Support folder usually does not exist yet on a
         # fresh machine, so create the whole path.
@@ -112,7 +136,7 @@ def save_table(table: list[dict], path: str | os.PathLike | None = None) -> None
         pass
 
 
-def load(path: str | os.PathLike | None = None) -> int:
+def load(path: str | os.PathLike | None | _NoSave = None) -> int:
     """The best score ever (top of the table), for the HIGH SCORE readout.
 
     The in-game HIGH SCORE number is the table's first entry, so it
@@ -122,26 +146,32 @@ def load(path: str | os.PathLike | None = None) -> int:
     return table[0]["score"] if table else 0
 
 
-def save(score: int, path: str | os.PathLike | None = None) -> None:
+def save(score: int, path: str | os.PathLike | None | _NoSave = None) -> None:
     """Legacy single-score writer; kept for compatibility (spec 4.10)."""
     save_table([{"score": int(score), "at": ""}], path)
 
 
-def qualifies(score: int, path: str | os.PathLike | None = None) -> bool:
+def qualifies(score: int, path: str | os.PathLike | None | _NoSave = None) -> bool:
     """True when a score would enter the top-5 table (owner 2026-10-25).
 
     Two rules:
       - A score of 0 or less never qualifies (an empty run is not a record).
       - While the table still has room, any positive score qualifies;
         once it is full, the score must beat the LAST (worst) entry.
+
+    NO_SAVE never qualifies, so headless benchmark games also report
+    top_run = False instead of claiming a leaderboard entry they cannot
+    persist.
     """
+    if isinstance(path, _NoSave):
+        return False
     table = load_table(path)
     if score <= 0:
         return False
     return len(table) < TABLE_SIZE or score > table[-1]["score"]
 
 
-def add(score: int, path: str | os.PathLike | None = None) -> list[dict]:
+def add(score: int, path: str | os.PathLike | None | _NoSave = None) -> list[dict]:
     """Insert a score into the table if it qualifies, persist, and
     return the resulting top-5 table.
 

@@ -103,6 +103,11 @@ def test_level_for_lines_placeholder_rule():
     assert level_for_lines(0, LEVEL_LINES) == 1
     assert level_for_lines(0, LEVEL_LINES - 1) == 0
     assert level_for_lines(2, 3 * LEVEL_LINES) == 5
+    # A mid-game anchor: only lines cleared after the jump count. Jumping
+    # to level 5 at line 30 must not turn line 31 into level 6.
+    assert level_for_lines(5, 30, 30) == 5
+    assert level_for_lines(5, 31, 30) == 5
+    assert level_for_lines(5, 60, 30) == 6
 
 
 def make_game(tmp_path, pieces=(Piece.I, Piece.O)):
@@ -303,3 +308,43 @@ def test_cheat_set_level_command(tmp_path):
     assert core.handle_line('{"cmd": "set_level", "level": 10}')[0]["ok"] is False
     assert core.handle_line('{"cmd": "set_level"}')[0]["ok"] is False
     assert core.handle_line('{"cmd": "set_level", "level": "eight"}')[0]["ok"] is False
+
+
+def _lock_prepared_single(game) -> None:
+    """Clear any prior dissolve, prepare the bottom row, and lock an I."""
+    if game._clearing_rows is not None:
+        game.board.clear_rows(game._clearing_rows)
+        game._clearing_rows = None
+    for x in (0, 1, 2, 3, 8, 9):
+        game.board.lock_cells([(x, 22)], 6)
+    game._piece_kind = Piece.I
+    game._rot = 0
+    game._piece_x = 4
+    game._piece_y = 22
+    game._lock()
+
+
+def test_level_jump_does_not_recount_old_lines(tmp_path):
+    """A level jump anchors progression at the current 30-line block.
+
+    Regression for the 30-to-31 boundary: at 30 lines the game is level 1.
+    Selecting level 5 must not make the next single (line 31) jump to
+    level 6. The next level should arrive at line 60, after 30 more lines.
+    """
+    game = make_game(tmp_path)
+    game.lines = BONUS_BLOCK_LINES - 1
+    _lock_prepared_single(game)
+    assert game.lines == BONUS_BLOCK_LINES
+    assert game.level == 1
+
+    assert game.set_level(5) is True
+    assert game._level_base_lines == BONUS_BLOCK_LINES
+
+    _lock_prepared_single(game)
+    assert game.lines == BONUS_BLOCK_LINES + 1
+    assert game.level == 5
+
+    game.lines = BONUS_BLOCK_LINES * 2 - 1
+    _lock_prepared_single(game)
+    assert game.lines == BONUS_BLOCK_LINES * 2
+    assert game.level == 6

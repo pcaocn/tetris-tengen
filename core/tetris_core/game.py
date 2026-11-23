@@ -37,6 +37,7 @@ from .pieces import Piece, ROTATIONS
 from .rng import PieceRNG
 from .scoring import (
     BLOCK_BONUS_POINTS,
+    LEVEL_LINES,
     block_bonuses,
     level_for_lines,
     points_for_clear,
@@ -150,6 +151,10 @@ class Game:
         self.score = 0
         self.lines = 0
         self._start_level = level
+        # Line count at the last level anchor. Level progression is measured
+        # from this point, not from the whole run, so a mid-game level jump
+        # cannot re-count every 30-line block that predates it.
+        self._level_base_lines = 0
         self.level = level
         self.stats = PieceStats()
         self.status = Status.PLAYING
@@ -202,6 +207,10 @@ class Game:
 
     def pause(self) -> None:
         if self.status is Status.PLAYING:
+            # A key-up can arrive after the pause (or be lost entirely when
+            # the window loses focus). Clear the held state here so resuming
+            # never inherits a stuck DAS or soft-drop flag.
+            self._clear_held_input()
             self.status = Status.PAUSED
         elif self.status is Status.PAUSED:
             self.status = Status.PLAYING
@@ -211,13 +220,36 @@ class Game:
             # spawns now (it was deferred by the celebration).
             self._resume_after_celebration()
 
+    def _clear_held_input(self) -> None:
+        """Drop every held-key latch without touching the piece."""
+        self._stop_das()
+        self._soft_drop = False
+        self._soft_held = 0
+
     def _resume_after_celebration(self) -> None:
         """Leave the end-of-stage celebration and start the next level."""
+        self._clear_held_input()
         self.status = Status.PLAYING
         self._celebrate_frames = 0
         self._spawn_next()
 
     def handle_input(self, action: str) -> None:
+        # Releases are accepted in EVERY state. A key can be released while
+        # paused, during a celebration, or after focus was lost; dropping the
+        # release would leave the core's held-key latch armed and the piece
+        # would keep moving when play resumes.
+        if action == "left_off":
+            if self._das_dir == -1:
+                self._stop_das()
+            return
+        if action == "right_off":
+            if self._das_dir == 1:
+                self._stop_das()
+            return
+        if action == "soft_drop_off":
+            self._soft_drop = False
+            self._soft_held = 0
+            return
         if self.status is not Status.PLAYING:
             return
         if self.autopilot:
@@ -228,17 +260,8 @@ class Game:
             self._start_das(-1)
         elif action == "right":
             self._start_das(1)
-        elif action == "left_off":
-            if self._das_dir == -1:
-                self._stop_das()
-        elif action == "right_off":
-            if self._das_dir == 1:
-                self._stop_das()
         elif action == "soft_drop_on":
             self._soft_drop = True
-        elif action == "soft_drop_off":
-            self._soft_drop = False
-            self._soft_held = 0
         elif action == "rotate_cw":
             self._try_rotate(1)
         elif action == "rotate_ccw":
@@ -262,10 +285,15 @@ class Game:
             # End-of-stage celebration (owner request 2026-10-29): the
             # celebration track plays once, then the next level starts
             # automatically. Nothing else may happen during this window.
+            #
+            # Only the entry and exit frames are observable. The timer is
+            # internal; emitting an identical snapshot for every one of the
+            # 210 frames made the UI redraw a static board hundreds of times.
             self._celebrate_frames += 1
             if self._celebrate_frames >= CELEBRATE_FRAMES:
                 self._resume_after_celebration()
-            return True
+                return True
+            return False
         if self.status is not Status.PLAYING:
             # Paused or game over: the game is frozen.
             return False
@@ -329,11 +357,17 @@ class Game:
         mid-game. Gravity and the locked color change immediately; the
         start level moves too, so progression continues from the new
         level instead of reverting on the next clear.
+
+        The line anchor moves to the start of the current 30-line block.
+        Without that, the next clear would add every block completed by
+        the whole run to the new level (for example, level 5 at line 30
+        then jumping to level 6 on line 31).
         """
         if self.status is not Status.PLAYING:
             return False
         self.level = max(0, min(level, 9))
         self._start_level = self.level
+        self._level_base_lines = (self.lines // LEVEL_LINES) * LEVEL_LINES
         return True
 
     # ------------------------------------------------------------------
@@ -607,7 +641,9 @@ class Game:
         # bonuses the clear completed.
         self.score += points_for_clear(len(rows))
         self.score += BLOCK_BONUS_POINTS * block_bonuses(lines_before, self.lines)
-        new_level = level_for_lines(self._start_level, self.lines)
+        new_level = level_for_lines(
+            self._start_level, self.lines, self._level_base_lines
+        )
         if new_level > self.level:
             # The level went UP: this clear completed a 30-line block, so
             # the end-of-stage celebration must play (spec 5).

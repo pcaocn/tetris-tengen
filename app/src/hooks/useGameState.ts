@@ -62,6 +62,17 @@ export interface GameState {
 export type GameStatus = GameState["status"];
 
 /**
+ * The shell's cached answer for a UI that subscribed after startup.
+ * `status` is the child-process phase, not the game status; `state` is the
+ * newest snapshot (if any), and `error` is set only after a fatal spawn.
+ */
+export interface CoreStatusSnapshot {
+  status: "starting" | "running" | "error";
+  error: string | null;
+  state: GameState | null;
+}
+
+/**
  * Subscribes to the core's state stream for the lifetime of the app.
  *
  * @returns state  -- the latest snapshot, or null until the first one
@@ -107,7 +118,20 @@ export function useGameState() {
         }
       }),
     ];
-    // Ask for the current state; harmless if the core is not up yet, the
+    // Ask the shell for its cached startup result. This is what recovers an
+    // early spawn failure: the `core-error` event may have fired before this
+    // effect subscribed, so listening alone can never see it.
+    invoke<CoreStatusSnapshot>("get_core_status")
+      .then((snapshot) => {
+        if (snapshot.state) setState(snapshot.state);
+        // Only a fatal status clears/raises here. A stale "running"
+        // response must never erase a newer core-error event.
+        if (snapshot.status === "error") {
+          setError(snapshot.error ?? "Python core failed to start.");
+        }
+      })
+      .catch(() => {});
+    // Also ask for a fresh state; harmless if the core is not up yet, the
     // first state event will still arrive once it starts.
     invoke("get_state").catch(() => {});
     // Cleanup: unsubscribe in the same order, swallowing errors — a

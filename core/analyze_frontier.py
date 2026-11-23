@@ -206,11 +206,31 @@ def main() -> None:
         sys.exit(1)
     ref = by_variant[args.ref]
 
+    # A Pareto/bender ranking compares RAW means and death counts across
+    # variants. Those numbers are only comparable when every variant was
+    # measured on the same seeds. Use the intersection of all seed sets and
+    # say so loudly when a variant does not cover the reference set.
+    common_seeds = set(ref)
+    for res in by_variant.values():
+        common_seeds.intersection_update(res)
+    if not common_seeds:
+        print("no seed set is shared by every variant; cannot rank")
+        sys.exit(1)
+    partial = [
+        name for name, res in by_variant.items() if set(res) != set(ref)
+    ]
+
     print(f"Paired frontier analysis vs {args.ref!r} "
-          f"({len(ref)} seeds, {args.csv_path})\n")
+          f"({len(common_seeds)} seeds shared by all variants, {args.csv_path})\n")
+    if partial:
+        print(
+            f"WARNING: {len(partial)} variant(s) do not cover the reference "
+            f"seed set; ranking uses the {len(common_seeds)} shared seeds."
+        )
+        print(f"         affected: {', '.join(sorted(partial))}\n")
 
     header = (
-        f"{'variant':<16} {'early':>6} {'McNemar p':>11} {'b/c':>7} "
+        f"{'variant':<16} {'n':>4} {'early':>6} {'McNemar p':>11} {'b/c':>7} "
         f"{'mean score':>11} {'d score':>10} {'95% CI':>19} "
         f"{'tetri':>6} {'pts/line':>9}"
     )
@@ -219,10 +239,9 @@ def main() -> None:
 
     out = []
     for name, res in by_variant.items():
-        # Only the seeds BOTH variants played can be compared.
-        seeds = sorted(set(res) & set(ref))
-        if not seeds:
-            continue
+        # Every comparison uses the same seed set, so raw means and counts
+        # in the frontier ranking below are directly comparable.
+        seeds = sorted(common_seeds)
         b = c = 0
         deltas = []
         for s in seeds:
@@ -244,14 +263,29 @@ def main() -> None:
         lo, hi = bootstrap_ci(deltas, args.boot)
         tetrises = statistics.mean(float(res[s]["tetrises"]) for s in seeds)
         ppl = statistics.mean(float(res[s]["pts_per_line"]) for s in seeds)
-        out.append((name, early, p, b, c, mean_score, d_mean, lo, hi, tetrises, ppl))
+        out.append(
+            (
+                name,
+                early,
+                p,
+                b,
+                c,
+                mean_score,
+                d_mean,
+                lo,
+                hi,
+                tetrises,
+                ppl,
+                len(seeds),
+            )
+        )
 
     # ---- The comparison table ----------------------------------------
-    for name, early, p, b, c, mean_score, d_mean, lo, hi, tetrises, ppl in out:
+    for name, early, p, b, c, mean_score, d_mean, lo, hi, tetrises, ppl, n in out:
         # A star marks a significant McNemar result.
         star = " *" if p < 0.05 else ""
         print(
-            f"{name:<16} {early:>6} {p:>11.4f}{star:>2} {f'{b}/{c}':>7} "
+            f"{name:<16} {n:>4} {early:>6} {p:>11.4f}{star:>2} {f'{b}/{c}':>7} "
             f"{mean_score:>11,.0f} {d_mean:>10,.0f} "
             f"{f'[{lo:,.0f}, {hi:,.0f}]':>19} "
             f"{tetrises:>6.1f} {ppl:>9.1f}"
@@ -290,17 +324,18 @@ def main() -> None:
     benders = []
     for row in out:
         name, early, p, b, c, mean_score = row[0], row[1], row[2], row[3], row[4], row[5]
+        n = row[-1]
         if name == args.ref:
             continue
         if early < ref_early and mean_score > ref_score:
-            benders.append((name, early, mean_score, p, b, c))
+            benders.append((name, early, mean_score, p, b, c, n))
     if not benders:
         print("    (none -- every variant trades score for survival, or the "
               "reverse)")
-    for name, early, mean_score, p, b, c in benders:
+    for name, early, mean_score, p, b, c, n in benders:
         print(f"    {name:<16} early={early:>3} (ref {ref_early})  "
               f"mean score={mean_score:>11,.0f} (ref {ref_score:,.0f})  "
-              f"McNemar p={p:.4f} b/c={b}/{c}")
+              f"McNemar p={p:.4f} b/c={b}/{c} n={n}")
 
 
 if __name__ == "__main__":

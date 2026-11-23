@@ -43,6 +43,7 @@ import pytest
 
 from tetris_core.board import HIDDEN_ROWS
 from tetris_core.game import (
+    CELEBRATE_FRAMES,
     CLEAR_ANIM_FRAMES,
     SPAWN_X,
     SPAWN_Y,
@@ -190,6 +191,50 @@ def test_pause_freezes_and_resumes(tmp_path):
     assert game.status is Status.PLAYING
     game.update()  # resumes ticking
     assert game.frame == frame + 1
+
+
+def test_pause_clears_held_horizontal_input(tmp_path):
+    """Pausing drops a held DAS latch; releasing while paused is accepted.
+
+    Regression: the core used to ignore every input while paused, so a
+    key released during the pause stayed armed and the piece auto-shifted
+    all the way to the wall after resuming.
+    """
+    core = make_core(tmp_path, [Piece.T, Piece.O])
+    game = core.game
+    game.handle_input("left")
+    pressed_x = game._piece_x
+    assert pressed_x == SPAWN_X - 1
+
+    game.pause()
+    assert game._das_dir == 0
+    # A release that arrives during the pause is harmless and still clears
+    # any latch (white-box set proves the paused branch handles it).
+    game._das_dir = -1
+    game.handle_input("left_off")
+    assert game._das_dir == 0
+
+    game.pause()
+    for _ in range(30):
+        game.update()
+    assert game._piece_x == pressed_x
+
+
+def test_pause_clears_held_soft_drop(tmp_path):
+    """A Down key held across a pause cannot keep soft-dropping on resume."""
+    core = make_core(tmp_path, [Piece.T, Piece.O])
+    game = core.game
+    game.handle_input("soft_drop_on")
+    game.pause()
+    assert game._soft_drop is False
+    assert game._soft_held == 0
+    # Release during the pause is accepted too.
+    game.handle_input("soft_drop_off")
+    game.pause()
+    y = game._piece_y
+    for _ in range(10):
+        game.update()
+    assert game._piece_y == y
 
 
 def test_soft_drop_locks_piece_at_floor(tmp_path):
@@ -378,6 +423,77 @@ def test_game_over_when_spawn_blocked_saves_high_score(tmp_path):
     assert game.piece_kind is None
     assert game.high_score == 1234
     assert load_highscore(tmp_path / "highscore.json") == 1234
+
+
+def test_no_save_highscore_does_not_touch_player_table(tmp_path):
+    """NO_SAVE gives headless runs a private empty leaderboard.
+
+    Regression: both benchmark runners used to construct a normal Game,
+    so a qualifying benchmark death wrote into the desktop player's
+    top-five file. A pre-seeded player table must stay byte-for-byte
+    intact after a NO_SAVE game tops out with a qualifying score.
+    """
+    player_path = tmp_path / "player-highscore.json"
+    highscore.add(1234, player_path)
+    before = player_path.read_bytes()
+
+    core = Core(
+        highscore_path=highscore.NO_SAVE,
+        rng=FixedRNG([Piece.T, Piece.L]),
+    )
+    game = core.game
+    game.score = 999_999
+
+    # Same blocked-spawn recipe as the game-over test.
+    holes = {(0, y) for y in range(HIDDEN_ROWS, 23)} | set(game.piece_cells())
+    for y in range(HIDDEN_ROWS + 1, 23):
+        for x in range(10):
+            if (x, y) not in holes:
+                game.board.lock_cells([(x, y)], 6)
+    game.handle_input("soft_drop_on")
+    for _ in range(300):
+        game.update()
+        if game.status is Status.GAME_OVER:
+            break
+
+    assert game.status is Status.GAME_OVER
+    assert game.top_run is False
+    assert game.top_scores == []
+    assert player_path.read_bytes() == before
+
+
+def test_benchmark_runners_use_no_save_store(monkeypatch):
+    """Both benchmark entry points pass NO_SAVE into the real Game ctor."""
+    import simulate_autopilot
+    import sweep_autopilot
+
+    seen: list[object] = []
+
+    class FakeStats:
+        def as_dict(self):
+            return {"T": 1}
+
+    class FakeGame:
+        def __init__(self, highscore_path=None, rng=None):
+            seen.append(highscore_path)
+            self.status = Status.GAME_OVER
+            self.lines = 0
+            self.score = 0
+            self.level = 0
+            self.stats = FakeStats()
+
+        def set_autopilot(self, mode):
+            pass
+
+    monkeypatch.setattr(simulate_autopilot, "Game", FakeGame)
+    monkeypatch.setattr(sweep_autopilot, "Game", FakeGame)
+
+    simulate_autopilot.run_one(1, "quick", 0)
+    assert seen == [highscore.NO_SAVE]
+
+    seen.clear()
+    sweep_autopilot.run_one((1, sweep_autopilot.autopilot.STRATEGIES["highscore"], 0))
+    assert seen == [highscore.NO_SAVE]
 
 
 def test_high_score_roundtrip_and_corruption(tmp_path):
@@ -663,6 +779,36 @@ def test_level_complete_celebration_then_resume(tmp_path):
     assert game.status is Status.PLAYING
     assert game.piece_kind is Piece.O
     assert game.music_phase == "gameplay"
+
+
+def test_celebration_emits_only_entry_and_exit_states(tmp_path):
+    """The static celebration must not emit 210 identical snapshots.
+
+    The UI needs the entry state (level_complete) and the exit state
+    (playing, next piece). The 209 intermediate frames are internal timer
+    ticks; emitting them only causes needless React renders and canvas
+    resets.
+    """
+    core = make_core(tmp_path, [Piece.I, Piece.O])
+    game = core.game
+    game.lines = BONUS_BLOCK_LINES - 1
+    complete_one_line(game)
+    for _ in range(CLEAR_ANIM_FRAMES):
+        game.update()
+    assert game.status is Status.LEVEL_COMPLETE
+    # A key held across the celebration must not leak into the next level.
+    game._das_dir = -1
+    game._soft_drop = True
+
+    # 209 internal ticks, then the exit frame.
+    assert game.update() is False
+    for _ in range(CELEBRATE_FRAMES - 2):
+        assert game.update() is False
+    assert game.update() is True
+    assert game.status is Status.PLAYING
+    assert game._das_dir == 0
+    assert game._soft_drop is False
+    assert game.piece_kind is Piece.O
 
 
 def test_milestone_celebration_every_tenth_level(tmp_path):

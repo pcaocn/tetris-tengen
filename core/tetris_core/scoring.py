@@ -71,11 +71,14 @@ def block_bonuses(lines_before: int, lines_after: int) -> int:
     return lines_after // BONUS_BLOCK_LINES - lines_before // BONUS_BLOCK_LINES
 
 
-def level_for_lines(start_level: int, lines: int) -> int:
+def level_for_lines(start_level: int, lines: int, base_lines: int = 0) -> int:
     """The level reached after clearing `lines` lines.
 
-    `start_level` is the level the game began at, not the current level,
-    so that the cheat "jump to level N" (spec 4.5) moves the whole
-    progression curve rather than only the current level.
+    `start_level` is the level at the last anchor (a new game or a level
+    jump), not necessarily the level the game began at. `base_lines` is
+    the line count at that anchor, so progression after a mid-game jump
+    measures only the lines cleared since the jump. The default of zero
+    preserves the original whole-run rule for a game that never jumped.
     """
-    return start_level + lines // LEVEL_LINES
+    progress = max(0, lines - base_lines)
+    return start_level + progress // LEVEL_LINES

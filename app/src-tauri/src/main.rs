@@ -33,6 +33,25 @@ use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Startup state of the Python child, mirrored for a UI that subscribes
+/// after the shell has already tried to launch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoreStartupStatus {
+    Starting,
+    Running,
+    Error,
+}
+
+impl CoreStartupStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// The shared handle on the Python process, registered as Tauri state.
 ///
 /// `Arc` because the supervisor thread needs to own a reference while the
@@ -61,6 +80,11 @@ struct Inner {
     /// The most recent `state` event, cached so `get_state` can answer
     /// immediately without waiting for the next frame.
     latest_state: Option<Value>,
+    /// The most recent startup result. A UI that mounts after a failed
+    /// spawn can read this instead of waiting forever on "Connecting".
+    startup_status: CoreStartupStatus,
+    /// The fatal startup error, if `startup_status` is `Error`.
+    startup_error: Option<String>,
     /// The resolved interpreter path (cached after the first resolution).
     python: Option<PathBuf>,
     /// The resolved core directory (cached after the first resolution).
@@ -75,6 +99,8 @@ impl PythonCore {
                 stdin: None,
                 stdout: None,
                 latest_state: None,
+                startup_status: CoreStartupStatus::Starting,
+                startup_error: None,
                 python: None,
                 core_dir: None,
             }),
@@ -104,6 +130,8 @@ impl PythonCore {
         inner.stdin = None;
         inner.stdout = None;
         inner.latest_state = None;
+        inner.startup_status = CoreStartupStatus::Starting;
+        inner.startup_error = None;
         // Work out which Python to run and where the core lives.
         let (python, core_dir) = resolve_paths(app, &mut inner);
         // Start `python -m tetris_core` with the core directory as the
@@ -124,6 +152,8 @@ impl PythonCore {
         inner.stdin = Some(child.stdin.take().ok_or("python stdin unavailable")?);
         inner.stdout = Some(child.stdout.take().ok_or("python stdout unavailable")?);
         inner.child = Some(child);
+        inner.startup_status = CoreStartupStatus::Running;
+        inner.startup_error = None;
         Ok(())
     }
 
@@ -141,10 +171,7 @@ impl PythonCore {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         cmd["id"] = json!(id);
         let mut inner = self.inner.lock().map_err(|_| "core lock poisoned")?;
-        let stdin = inner
-            .stdin
-            .as_mut()
-            .ok_or("python core is not running")?;
+        let stdin = inner.stdin.as_mut().ok_or("python core is not running")?;
         // One JSON object per line — that is the whole protocol.
         writeln!(stdin, "{cmd}").map_err(|e| format!("write to python failed: {e}"))?;
         // Flush immediately: the core reads line by line and would
@@ -163,6 +190,26 @@ impl PythonCore {
     /// The cached state, cloned out so the caller can own it.
     fn latest_state(&self) -> Option<Value> {
         self.inner.lock().ok()?.latest_state.clone()
+    }
+
+    /// Record the current startup phase and any fatal error.
+    fn set_startup_status(&self, status: CoreStartupStatus, error: Option<String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.startup_status = status;
+            inner.startup_error = error;
+        }
+    }
+
+    /// A late subscriber's view of the shell: startup phase, fatal error,
+    /// and the newest state snapshot. This is what lets React recover an
+    /// error event that fired before its listeners were attached.
+    fn status_snapshot(&self) -> Result<Value, String> {
+        let inner = self.inner.lock().map_err(|_| "core lock poisoned")?;
+        Ok(json!({
+            "status": inner.startup_status.as_str(),
+            "error": inner.startup_error.clone(),
+            "state": inner.latest_state.clone(),
+        }))
     }
 
     /// Start the supervision thread (no-op if already supervising). The
@@ -274,10 +321,14 @@ fn resolve_paths(app: &AppHandle, inner: &mut Inner) -> (PathBuf, PathBuf) {
 /// way out is the `shutting_down` flag set during app shutdown.
 fn supervise(app: AppHandle, core: Arc<PythonCore>) {
     loop {
-        // Start (or restart) Python.
+        // Start (or restart) Python. The status is mirrored in Rust so a
+        // UI that subscribes later can see either the successful launch or
+        // the fatal error instead of remaining on "Connecting".
+        core.set_startup_status(CoreStartupStatus::Starting, None);
         if let Err(message) = core.spawn(&app) {
             // Spawning failed outright: report it to the UI and stop
             // supervising (retrying would just fail again).
+            core.set_startup_status(CoreStartupStatus::Error, Some(message.clone()));
             core.supervising.store(false, Ordering::Relaxed);
             let _ = app.emit(
                 "core-event",
@@ -387,10 +438,7 @@ fn set_music(core: State<'_, Arc<PythonCore>>, music: Option<String>) -> Result<
 // this behind the Konami code — Home = highscore, End = quick, off via
 // either key).
 #[tauri::command]
-fn set_autopilot(
-    core: State<'_, Arc<PythonCore>>,
-    mode: Option<String>,
-) -> Result<(), String> {
+fn set_autopilot(core: State<'_, Arc<PythonCore>>, mode: Option<String>) -> Result<(), String> {
     core.send_command(json!({ "cmd": "set_autopilot", "mode": mode }))
 }
 
@@ -403,6 +451,16 @@ fn set_autopilot(
 fn get_state(core: State<'_, Arc<PythonCore>>) -> Result<Option<Value>, String> {
     core.send_command(json!({ "cmd": "get_state" }))?;
     Ok(core.latest_state())
+}
+
+/// Return the shell's cached startup status and latest snapshot.
+///
+/// React calls this after subscribing. It is deliberately separate from
+/// `get_state`: that command needs a live Python child, while this one can
+/// still answer when the child failed to spawn.
+#[tauri::command]
+fn get_core_status(core: State<'_, Arc<PythonCore>>) -> Result<Value, String> {
+    core.status_snapshot()
 }
 
 /// Make sure the supervisor is running. The UI calls this on mount, in
@@ -429,6 +487,7 @@ fn main() {
             set_autopilot,
             pause,
             get_state,
+            get_core_status,
             start_core
         ])
         .setup(move |app| {
@@ -439,4 +498,27 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_snapshot_starts_in_starting_phase() {
+        let core = PythonCore::new();
+        let snapshot = core.status_snapshot().expect("status snapshot");
+        assert_eq!(snapshot["status"], "starting");
+        assert!(snapshot["error"].is_null());
+        assert!(snapshot["state"].is_null());
+    }
+
+    #[test]
+    fn status_snapshot_retains_fatal_error_for_late_ui() {
+        let core = PythonCore::new();
+        core.set_startup_status(CoreStartupStatus::Error, Some("spawn failed".into()));
+        let snapshot = core.status_snapshot().expect("status snapshot");
+        assert_eq!(snapshot["status"], "error");
+        assert_eq!(snapshot["error"], "spawn failed");
+    }
 }

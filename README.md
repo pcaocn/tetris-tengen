@@ -71,7 +71,7 @@ sprites or artwork from the original game are used; music files in
 ## Requirements
 
 - macOS (the app is not yet configured for Windows/Linux)
-- [Node.js](https://nodejs.org) 18+ with npm
+- [Node.js](https://nodejs.org) 20.19+ (20.x line) or 22.12+ (22.x and newer), with npm
 - [Rust](https://rustup.rs) toolchain and Xcode Command Line Tools
   (`xcode-select --install`)
 - [uv](https://docs.astral.sh/uv/) — manages the Python interpreter

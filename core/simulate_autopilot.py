@@ -13,6 +13,10 @@ Usage:
 The game logic is the real `tetris_core.Game` — only the wall-clock pacing
 is removed, so results match what the app would play.
 
+TIMING NOTE: the 210-frame (3.5 s at 60 Hz) end-of-stage celebration is
+skipped. Frame counts and rates below measure active play time, not the
+frozen celebration window.
+
 WHAT THIS SCRIPT IS FOR
 -----------------------
 It answers "how good is strategy X?" for ONE strategy at a time, with a
@@ -47,6 +51,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from tetris_core import highscore
 from tetris_core.game import Game, Status
 from tetris_core.rng import PieceRNG
 
@@ -104,8 +109,9 @@ def run_one(seed: int, strategy: str, max_frames: int) -> RunResult:
     Runs in a worker process, so it returns a plain dataclass (which is
     picklable) and takes only simple arguments.
     """
-    # A seeded game: the same seed always gives the same piece sequence.
-    game = Game(rng=PieceRNG(seed))
+    # A seeded game with a private score sink: benchmark workers must not
+    # write the desktop player's top-five table.
+    game = Game(highscore_path=highscore.NO_SAVE, rng=PieceRNG(seed))
     # Turn the autopilot on. "quick" clears lines fast, "highscore"
     # maximizes the score.
     game.set_autopilot(strategy)
@@ -353,6 +359,7 @@ def main() -> None:
         f"Running {args.runs} autopilot '{args.strategy}' games "
         f"(max {args.max_frames:,} frames each, no pacing)..."
     )
+    print("Timing: active play frames; end-of-stage celebrations are skipped.")
     print(f"Master seed {args.seed}; game seeds are the first {len(seeds)} of:")
     print("  " + ", ".join(str(s) for s in seeds))
     print()

@@ -7,3 +7,5 @@ __pycache__/
 app/node_modules/
 app/dist/
 app/src-tauri/target/
+*.tsbuildinfo
+tetris-tengen-code-review.md
