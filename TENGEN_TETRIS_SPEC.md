@@ -135,17 +135,20 @@ tengen-tetris/
       test_game_flow.py
       test_autopilot.py
   app/                       # Tauri project
-    src-tauri/               # Rust core (spawns Python, routes commands/events)
+    src-tauri/               # Rust shell (spawns Python, routes commands/events)
+      src/main.rs            # executable entry point
+      src/lib.rs             # Tauri setup, commands, and registration
+      src/python_core.rs     # Python child process and protocol transport
     src/                     # React UI (TypeScript, Vite)
       main.tsx
-      App.tsx                # screen flow, key handling, cheat codes
+      App.tsx                # screen flow and wiring
       components/            # Board, NextPreview, ScorePanel, StatsPanel, Overlay,
                              # OptionsScreen, TitleScreen, cathedral.ts, draw.ts
-      hooks/                 # useGameState
+      hooks/                 # useGameState, useGameAudio, useGameKeyboard
       theme.ts               # logical resolution, palette, layout metrics
       controls.ts            # the keyboard binding table
       audioPlan.ts           # music-track state machine
-      sfxPlan.ts             # sound-effect / AudioContext lifecycle
+      sfxPlan.ts             # sound-effect / AudioContext policy
     scripts/                 # front-end tests (music state machine, SFX plan)
   assets/
     font/                    # open-licensed pixel font (section 6.3)

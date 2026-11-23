@@ -5,7 +5,8 @@
 # wrapper that owns the window and brokers the connection to the
 # Python core.
 #
-# The shell has three jobs and no more (see src/main.rs):
+# The shell has three jobs and no more (see src/lib.rs and
+# src/python_core.rs):
 #   1. spawn the Python core as a child process,
 #   2. relay JSON lines between that process's stdio and the web
 #      front end (Tauri commands in, Tauri events out),
@@ -29,7 +30,7 @@ edition = "2021"
 # tauri-build runs build.rs before the crate compiles. It reads
 # tauri.conf.json and the capabilities/ folder and generates the
 # permission scaffolding into OUT_DIR, so the `tauri::` macros in
-# main.rs have real code behind them.
+# src/lib.rs have real code behind them.
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }
 
