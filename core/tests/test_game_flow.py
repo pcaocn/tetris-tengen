@@ -50,7 +50,7 @@ from tetris_core.game import (
     Status,
     lock_delay_frames,
 )
-from tetris_core.scoring import BONUS_BLOCK_LINES
+from tetris_core.scoring import INITIAL_STAGE_LINES, placement_points
 from tetris_core import highscore
 from tetris_core.highscore import load as load_highscore
 from tetris_core.highscore import save as save_highscore
@@ -292,9 +292,10 @@ def test_lock_delay_is_short_and_shrinks_with_gravity():
     # Owner decision 2026-10-24: a short fixed window (not a full "1 drop"),
     # capped by the level's frames-per-row as gravity speeds up.
     assert lock_delay_frames(0) == 10
-    assert lock_delay_frames(7) == 10  # fpr 12: cap not yet binding
-    assert lock_delay_frames(8) == 9  # fpr 9: gravity cap binds
-    assert lock_delay_frames(13) == 2  # fpr 2
+    assert lock_delay_frames(7) == 9  # new level 7 gravity: 9 fpr
+    assert lock_delay_frames(8) == 7  # new level 8 gravity: 7 fpr
+    assert lock_delay_frames(10) == 5.5  # fractional gravity
+    assert lock_delay_frames(13) == 4  # new level 13 gravity: 4 fpr
 
 
 def test_landed_piece_stays_movable_then_locks(tmp_path):
@@ -333,10 +334,10 @@ def test_landed_piece_stays_movable_then_locks(tmp_path):
     game.handle_input("right_off")
     assert game._piece_x == rest_x
     # The full level-0 window (10 resting frames) elapses without locking.
-    for _ in range(lock_delay_frames(0) - 2):
+    for _ in range(int(lock_delay_frames(0)) - 2):
         game.update()
         assert game.piece_kind is Piece.I
-    assert game._rest_frames == lock_delay_frames(0) - 1
+    assert game._rest_frames == int(lock_delay_frames(0)) - 1
     game.update()  # 10th resting frame: window not yet expired.
     assert game.piece_kind is Piece.I
     assert game._piece_y == rest_y
@@ -421,8 +422,10 @@ def test_game_over_when_spawn_blocked_saves_high_score(tmp_path):
             break
     assert game.status is Status.GAME_OVER
     assert game.piece_kind is None
-    assert game.high_score == 1234
-    assert load_highscore(tmp_path / "highscore.json") == 1234
+    # The T locks at spawn before the next spawn is blocked. With soft
+    # drop held, that lock adds the level-0 placement award at height 18.
+    assert game.high_score == 1234 + placement_points(0, True, 18)
+    assert load_highscore(tmp_path / "highscore.json") == 1234 + placement_points(0, True, 18)
 
 
 def test_no_save_highscore_does_not_touch_player_table(tmp_path):
@@ -759,7 +762,7 @@ def test_level_complete_celebration_then_resume(tmp_path):
     """
     core = make_core(tmp_path, [Piece.I, Piece.O])
     game = core.game
-    game.lines = BONUS_BLOCK_LINES - 1  # clearing one line finishes level 0
+    game.lines = INITIAL_STAGE_LINES - 1  # clearing one line finishes level 0
     complete_one_line(game)
     # The wipe runs first; the celebration starts when it finishes.
     assert game.status is Status.PLAYING
@@ -770,15 +773,19 @@ def test_level_complete_celebration_then_resume(tmp_path):
     assert game.music_phase == "level_complete"
     assert game.level == 1
     assert game.piece_kind is None  # spawn deferred until Enter
+    score_at_stage = game.score
     # Movement inputs are ignored during the celebration.
     game.handle_input("left")
     assert game.status is Status.LEVEL_COMPLETE
     # Enter (the pause command) resumes: play continues, music returns to
-    # the gameplay phase, and the deferred piece spawns.
+    # the gameplay phase, and the deferred piece spawns. The stage payout
+    # must not be repeated by the skip or by a state request.
     core.handle_line('{"cmd": "pause"}')
     assert game.status is Status.PLAYING
     assert game.piece_kind is Piece.O
     assert game.music_phase == "gameplay"
+    assert game.score == score_at_stage
+    assert core.state_event()["score"] == score_at_stage
 
 
 def test_celebration_emits_only_entry_and_exit_states(tmp_path):
@@ -791,7 +798,7 @@ def test_celebration_emits_only_entry_and_exit_states(tmp_path):
     """
     core = make_core(tmp_path, [Piece.I, Piece.O])
     game = core.game
-    game.lines = BONUS_BLOCK_LINES - 1
+    game.lines = INITIAL_STAGE_LINES - 1
     complete_one_line(game)
     for _ in range(CLEAR_ANIM_FRAMES):
         game.update()
@@ -799,6 +806,7 @@ def test_celebration_emits_only_entry_and_exit_states(tmp_path):
     # A key held across the celebration must not leak into the next level.
     game._das_dir = -1
     game._soft_drop = True
+    score_at_stage = game.score
 
     # 209 internal ticks, then the exit frame.
     assert game.update() is False
@@ -809,13 +817,15 @@ def test_celebration_emits_only_entry_and_exit_states(tmp_path):
     assert game._das_dir == 0
     assert game._soft_drop is False
     assert game.piece_kind is Piece.O
+    assert game.score == score_at_stage
+    assert core.state_event()["score"] == score_at_stage
 
 
 def test_milestone_celebration_every_tenth_level(tmp_path):
     """A level that is a multiple of 10 gets the milestone track (09).
 
-    Step 1: set lines to 299 -- one short of 300, i.e. completing
-       level 9 (levels advance every 30 lines).
+    Step 1: start a game at level 9 (a 50-line stage) and set lines to
+       49, one short of the stage end.
     Step 2: complete one line and let the wipe finish.
 
     The status is LEVEL_COMPLETE (same celebration window) but the
@@ -826,8 +836,11 @@ def test_milestone_celebration_every_tenth_level(tmp_path):
     """
     core = make_core(tmp_path, [Piece.I, Piece.O])
     game = core.game
-    # Completing level 9 (lines 299 -> 300) bumps the level to 10.
-    game.lines = BONUS_BLOCK_LINES * 10 - 1
+    # Nonzero start: level 9's stage is 50 lines (50 -> level 10).
+    game.new_game(level=9)
+    assert game.level == 9
+    assert game._next_stage_line == 50
+    game.lines = 49
     complete_one_line(game)
     for _ in range(CLEAR_ANIM_FRAMES):
         game.update()
@@ -1076,7 +1089,10 @@ def test_top5_table_game_over_fireworks(tmp_path):
     assert game2.top_run is True
     state = core2.state_event()
     assert state["top_run"] is True
-    assert [e["score"] for e in state["top_scores"]] == [500, 400, 350, 300, 250]
+    # The T's soft-dropped lock adds its placement award (38 at level 0,
+    # height 18) before the blocked spawn ends the game.
+    expected = [500, 400, 350 + 38, 300, 250]
+    assert [e["score"] for e in state["top_scores"]] == expected
     assert state["high_score"] == 500
     # A new game resets the flag but keeps the table.
     game2.new_game(0)

@@ -1,84 +1,121 @@
-"""Line clears, scoring bonuses, and level progression (spec 4.5).
+"""Tengen scoring and level rules.
 
-Per-clear award values verified by the owner 2026-10-24 from the award
-table in png/screenshot_28.png. The 30-line bonus-block structure and the
-level rule remain VERIFY/TBD placeholders (open items) so the game is
-playable; they live here in one place for the owner to replace with
-verified values.
+Only the rules used by the implementation live here. The old flat
+30-line block bonus is removed; clear awards are accumulated into a
+pending stage award and paid at stage completion.
 
-THE SCORING MODEL IN THREE PARTS
---------------------------------
-1. CLEAR AWARD: every line-clear event immediately awards points based on
-   HOW MANY rows were cleared at once -- 1 row = 100, 2 = 400, 3 = 900,
-   4 = 2500. The values are super-linear on purpose: a tetris (4 rows)
-   pays 25x a single. This is what makes the "highscore" autopilot hunt
-   tetrises (spec 4.11) -- it is the only way to score fast.
-2. BLOCK BONUS: a bonus is paid for each completed 30-line block. The
-   `block_bonuses` helper counts how many blocks a single clear crossed,
-   so one tetris that completes two blocks at once pays two bonuses.
-3. LEVEL: the level advances by one for each completed 30-line block.
+WHAT THIS FILE IMPLEMENTS
+=========================
+- The four clear-value awards, credited to a pending stage award and paid
+  once when the stage ends (owner decision 2026-10-29, refined by the
+  Tengen cartridge brief).
+- The placement formula for a locked piece:
+  `min(d * r * (r + h), 999)`.
+- The Tengen level curve: 30-line stages through level 5, then 50-line
+  stages, with the displayed level capped at 17. Stage boundaries are
+  tracked separately by the game so the cap still pays and celebrates.
 
-The 30-line block structure is also what drives the end-of-stage
-celebration: `game.py` compares the level before and after a clear and
-freezes for the celebration track when the level changed (spec 5).
+EVIDENCE AND SOURCES
+====================
+- Clear values: the Tengen NES manual, printed p. 9 -- 100 / 400 / 900 /
+  2,500 points for 1 / 2 / 3 / 4 rows at once.
+- Level curve: the same manual's 30-line steps through 150, then 50-line
+  steps; TetrisWiki's Tengen level table confirms the 17-level display cap.
+- Placement formula: TetrisWiki, "Tetris (NES, Tengen)" -- one or two
+  points per cell of the piece's height, times the level number, with a
+  999-point cap. The row-height mapping used here is the height of the
+  piece's LOWEST occupied cell, with 0 on the bottom visible row. That is
+  the mapping in the disassembly's bitmap scan (`main.asm` L8658-L8692,
+  which keeps the last occupied cell before L9A47 adds it to the level
+  term).
+
+The autopilot's evaluator imports ``points_for_clear`` and normalises by
+100; it must stay importable even as the payout timing changes.
 """
 
 from __future__ import annotations
 
+# Tengen stage lengths, in lines. Stages 0-4 are 30 lines; from level 5
+# onward every stage is 50 lines.
+INITIAL_STAGE_LINES = 30
+LATE_STAGE_LINES = 50
 
-# Immediate points per single clear event, by lines cleared at once
-# (owner-verified from the award table: single 100, double 400,
-# triple 900, tetris 2500).
-#
-# The ratio between them is the whole point: a tetris is worth 25x a
-# single, 6.25x a double, and 2.8x a triple. The "highscore" autopilot
-# reads these numbers directly (`points_for_clear(cleared) / 100` is its
-# points weight), so changing a value here changes how the AI plays.
-POINTS_FOR_CLEAR = {1: 100, 2: 400, 3: 900, 4: 2500}
+# The displayed level stops at 17, but stage boundaries keep arriving
+# every 50 lines (800, 850, ...) and still pay.
+MAX_LEVEL = 17
+LEVEL_COUNT = MAX_LEVEL + 1
 
-# A bonus block completes every 30 cleared lines (spec 4.5 structure).
-BONUS_BLOCK_LINES = 30
-BLOCK_BONUS_POINTS = 300
+# The placement formula's cap (TetrisWiki).
+PLACEMENT_POINTS_CAP = 999
 
-# Level progression placeholder: one level per completed 30-line block.
-# Do not assume the Nintendo every-10-lines rule (spec 4.5).
-LEVEL_LINES = 30
+# The clear-value helper is the single source of truth for the award
+# table. It is used by the game (pending stage award) and by the
+# autopilot's evaluator, so a tuning change here automatically changes
+# both the score and the AI's valuation of a clear.
+AWARD_VALUES = {1: 100, 2: 400, 3: 900, 4: 2500}
 
 
 def points_for_clear(cleared: int) -> int:
-    """Points awarded for one clear event of `cleared` rows.
+    """Tengen's award for a clear of `cleared` rows (0..4).
 
-    Returns 0 for anything that is not a real clear size (0 rows, or an
-    impossible 5+), which keeps the caller simple: it can pass the row
-    count straight through without checking it first.
+    The rule is value-based: four rows at once is worth 25 single rows,
+    not four. That super-linear table is what makes the "highscore"
+    autopilot strategy want to hunt tetrises. The clear value is
+    accumulated into a pending stage award and credited once the stage
+    ends; it is no longer paid immediately on every clear.
     """
-    return POINTS_FOR_CLEAR.get(cleared, 0)
+    if cleared <= 0:
+        return 0
+    return AWARD_VALUES[min(4, cleared)]
 
 
-def block_bonuses(lines_before: int, lines_after: int) -> int:
-    """How many BONUS_BLOCK_LINES blocks were completed by this clear.
+def placement_points(level: int, soft_drop: bool, row_height: int) -> int:
+    """Points for one locked piece, excluding line-clear awards.
 
-    Integer division counts how many whole blocks the TOTAL line count
-    spans. Taking the difference between the count before and after the
-    clear gives the number of blocks this one clear crossed -- which can
-    be more than one (a tetris that lands exactly on a block boundary
-    completes two blocks at once).
+    ``level`` is the level at landing, BEFORE any stage advance caused by
+    this lock. ``soft_drop`` is the drop state at landing (Down held).
+    ``row_height`` is the height of the piece's lowest occupied cell,
+    counted from zero on the bottom visible row.
 
-    Note that this counts BLOCKS, not lines: the leftover lines inside an
-    unfinished block carry no bonus (spec 4.5 VERIFY -- the spec still
-    asks what happens to lines cleared outside a bonus block).
+    Formula: ``min(d * r * (r + h), 999)`` with ``r = level + 1`` and
+    ``d = 2`` for a soft-drop landing, otherwise 1.
     """
-    return lines_after // BONUS_BLOCK_LINES - lines_before // BONUS_BLOCK_LINES
+    r = max(0, level) + 1
+    d = 2 if soft_drop else 1
+    h = max(0, row_height)
+    return min(d * r * (r + h), PLACEMENT_POINTS_CAP)
+
+
+def stage_lines_for_level(level: int) -> int:
+    """How many lines make a stage at `level`.
+
+    Levels 0-4 use the cartridge's opening 30-line stages; level 5 and
+    above use 50-line stages. The cap level 17 still uses 50, so 800 and
+    850 are real stage boundaries.
+    """
+    return INITIAL_STAGE_LINES if level < 5 else LATE_STAGE_LINES
 
 
 def level_for_lines(start_level: int, lines: int, base_lines: int = 0) -> int:
-    """The level reached after clearing `lines` lines.
+    """The displayed level after clearing `lines` total lines.
 
     `start_level` is the level at the last anchor (a new game or a level
     jump), not necessarily the level the game began at. `base_lines` is
     the line count at that anchor, so progression after a mid-game jump
     measures only the lines cleared since the jump. The default of zero
-    preserves the original whole-run rule for a game that never jumped.
+    preserves the whole-run rule for a game that never jumped.
+
+    The curve is not a single 30-line rule: stages 0-4 are 30 lines and
+    stages 5+ are 50 lines. The loop walks those stage lengths so a
+    nonzero start or a custom jump cannot accidentally re-count the whole
+    run's line total.
     """
-    progress = max(0, lines - base_lines)
-    return start_level + progress // LEVEL_LINES
+    level = max(0, min(start_level, MAX_LEVEL))
+    remaining = max(0, lines - base_lines)
+    while level < MAX_LEVEL:
+        need = stage_lines_for_level(level)
+        if remaining < need:
+            break
+        remaining -= need
+        level += 1
+    return min(level, MAX_LEVEL)

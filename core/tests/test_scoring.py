@@ -1,180 +1,213 @@
-"""Scoring, clear dissolve, and level progression tests (spec 4.5).
+"""Scoring, level curve, and gravity tests (spec 4.3, 4.5, section 9).
 
 WHAT THIS FILE TESTS
 ====================
-The scoring model from scoring.py, at both levels:
+Three layers:
 
-    1. PURE FUNCTIONS -- the award table (single 100 / double 400 /
-       triple 900 / tetris 2500, owner-verified from screenshot_28.png),
-       the 30-line block-bonus counter, and the level progression rule.
-    2. LIVE GAME -- an actual lock through `Game._lock()`: score and
-       lines update IMMEDIATELY while the cleared rows are still
-       dissolving on screen, the protocol reports the clearing rows in
-       VISIBLE coordinates, the block bonus lands on the exact
-       30-line boundary, and the cheat commands (set_level, set_music)
-       validate their inputs.
+1. THE RULES (pure functions from gravity.py and scoring.py): the
+   fractional fall table, the soft-drop acceleration curve, the clear
+   award values, the placement formula and its 999 cap, and the Tengen
+   level curve with stage lengths 30/30/30/30/30 then 50 forever.
 
-WHY THE TIMING ASSERTIONS MATTER
---------------------------------
-Several tests check that the score changes BEFORE the dissolve finishes
-(`game.update()` has not run yet). That is a real game-feel decision:
-the player must see the points land the instant the piece locks, not a
-second later when the rows vanish. If these assertions ever fail, the
-award has been moved into the wrong phase of the clear animation.
+2. SCORING INTEGRATION: the clear award is accumulated into a pending
+   stage award and paid once at the stage boundary. Placement points are
+   awarded exactly once per lock, including locks that clear nothing.
+   The stage boundary is independent of the displayed level, so 800 and
+   850 still pay after the level cap at 17.
+
+3. THE CHEAT JUMP (section 4.5): set_level moves the next stage boundary
+   with the new level, preserving progress inside the current stage. The
+   next single after a jump must not re-count the whole run's line total.
 """
+
+from __future__ import annotations
 
 from tetris_core.game import (
     CLEAR_ANIM_FRAMES,
     Game,
     Status,
-    locked_color_index,
+    lock_delay_frames,
 )
+from tetris_core.gravity import frames_per_row, soft_drop_fpr
+from tetris_core.pieces import Piece
 from tetris_core.scoring import (
-    BONUS_BLOCK_LINES,
-    BLOCK_BONUS_POINTS,
-    LEVEL_LINES,
-    block_bonuses,
+    INITIAL_STAGE_LINES,
+    LATE_STAGE_LINES,
+    MAX_LEVEL,
+    PLACEMENT_POINTS_CAP,
     level_for_lines,
+    placement_points,
     points_for_clear,
+    stage_lines_for_level,
 )
-from tetris_core.board import HIDDEN_ROWS
 
 from helpers import FixedRNG
-from tetris_core.pieces import Piece
-from tetris_core.protocol import Core
 
 
 def test_points_for_clear_award_values():
-    """The per-clear award values, pinned exactly (owner-verified).
+    """The four clear values, in points, and nothing for zero.
 
-    Owner-verified 2026-10-24 from the award table in
-    png/screenshot_28.png: single 100, double 400, triple 900,
-    tetris 2500.
-
-    These four numbers are the game's economy: the super-linear ratio
-    (a tetris pays 25x a single) is what makes the highscore autopilot
-    hunt tetrises, and `points_for_clear(cleared) / 100` is fed
-    straight into its weights. The 0-row case returns 0 so callers can
-    pass a count straight through.
+    The rule is value-based (spec 4.5): four rows at once is worth 25
+    single rows, not four. That super-linear table is what makes the
+    "highscore" autopilot want to hunt tetrises, and
+    `points_for_clear(cleared) / 100` is fed to the AI as that value.
     """
-    # Owner-verified 2026-10-24 from the award table in
-    # png/screenshot_28.png: single 100, double 400, triple 900,
-    # tetris 2500.
     assert points_for_clear(1) == 100
     assert points_for_clear(2) == 400
     assert points_for_clear(3) == 900
     assert points_for_clear(4) == 2500
     assert points_for_clear(0) == 0
+    assert points_for_clear(7) == 2500  # out-of-range input clamps to a tetris
 
 
-def test_block_bonuses_counts_completed_blocks():
-    """How many 30-line blocks a clear crossed, including zero and many.
+def test_level_curve_matches_tengen_stage_lengths():
+    """The level curve uses 30-line stages through level 5, then 50.
 
-    Each line is a boundary case of the integer-division rule:
-      - exactly reaching a boundary (0 -> 30) completes one block;
-      - stopping one line short (0 -> 29) completes none;
-      - crossing from just before a boundary (29 -> 31) completes one;
-      - a huge clear can complete several at once (0 -> 90 = 3 blocks);
-      - the leftover lines of an unfinished block pay nothing
-        (25 -> 95 crosses the 30/60/90 boundaries = 3 bonuses, with 5
-        lines left over).
-    The autopilot's block bonus and the level rule both sit on this
-    helper, so an off-by-one here would corrupt two systems at once.
-    """
-    assert block_bonuses(0, BONUS_BLOCK_LINES) == 1
-    assert block_bonuses(0, BONUS_BLOCK_LINES - 1) == 0
-    assert block_bonuses(BONUS_BLOCK_LINES - 1, BONUS_BLOCK_LINES + 1) == 1
-    assert block_bonuses(0, 3 * BONUS_BLOCK_LINES) == 3
-    assert block_bonuses(25, 95) == 3  # 95//30 = 3 blocks completed in total
-
-
-def test_level_for_lines_placeholder_rule():
-    """One level per completed 30-line block (PLACEHOLDER rule).
-
-    Level progression is computed from the START level plus total lines
-    -- not from the current level -- so the last line proves a cheat
-    jump to level 2 plus three blocks of lines lands on level 5: the
-    whole curve shifts, it does not double-count. This is the
-    placeholder structure (spec 4.5 VERIFY); the Nintendo every-10
-    rule must NOT creep in, which is exactly what the 29-line case
-    guards.
+    Normal game starting at 0:
+      149 -> level 4, still in stage
+      150 -> level 5, stage ends
+      180/199 -> level 5, still in stage
+      200 -> level 6, stage ends
+      749 -> level 16, 750 -> level 17 (cap), 800/850 -> still 17.
     """
     assert level_for_lines(0, 0) == 0
-    assert level_for_lines(0, LEVEL_LINES) == 1
-    assert level_for_lines(0, LEVEL_LINES - 1) == 0
-    assert level_for_lines(2, 3 * LEVEL_LINES) == 5
-    # A mid-game anchor: only lines cleared after the jump count. Jumping
-    # to level 5 at line 30 must not turn line 31 into level 6.
+    assert level_for_lines(0, INITIAL_STAGE_LINES - 1) == 0
+    assert level_for_lines(0, 149) == 4
+    assert level_for_lines(0, 150) == 5
+    assert level_for_lines(0, 180) == 5
+    assert level_for_lines(0, 199) == 5
+    assert level_for_lines(0, 200) == 6
+    assert level_for_lines(0, 749) == 16
+    assert level_for_lines(0, 750) == MAX_LEVEL
+    assert level_for_lines(0, 800) == MAX_LEVEL
+    assert level_for_lines(0, 850) == MAX_LEVEL
+
+    # A nonzero start and a mid-game jump only count lines since the
+    # anchor. Level 5 stages are 50 lines, so 50 lines later is level 6.
+    assert level_for_lines(5, 0) == 5
+    assert level_for_lines(5, 49) == 5
+    assert level_for_lines(5, 50) == 6
     assert level_for_lines(5, 30, 30) == 5
     assert level_for_lines(5, 31, 30) == 5
-    assert level_for_lines(5, 60, 30) == 6
+    assert level_for_lines(5, 80, 30) == 6
+
+    assert stage_lines_for_level(0) == INITIAL_STAGE_LINES
+    assert stage_lines_for_level(4) == INITIAL_STAGE_LINES
+    assert stage_lines_for_level(5) == LATE_STAGE_LINES
+    assert stage_lines_for_level(MAX_LEVEL) == LATE_STAGE_LINES
+
+
+def test_placement_points_formula_and_cap():
+    """Placement points are min(d*r*(r+h), 999)."""
+    assert placement_points(0, False, 0) == 1
+    assert placement_points(0, True, 0) == 2
+    assert placement_points(1, False, 0) == 4  # 1 * 2 * (2 + 0)
+    assert placement_points(0, True, 2) == 6  # 2 * 1 * (1 + 2)
+    assert placement_points(17, False, 100) == PLACEMENT_POINTS_CAP
+    assert placement_points(17, True, 100) == PLACEMENT_POINTS_CAP
+
+
+def test_lock_delay_cap_is_finite():
+    """The grace is 10 frames, capped by the level's fall interval."""
+    assert lock_delay_frames(0) == 10
+    assert lock_delay_frames(7) == 9  # new level 7 gravity: 9 fpr
+    assert lock_delay_frames(8) == 7  # new level 8 gravity: 7 fpr
+    assert lock_delay_frames(10) == 5.5  # fractional gravity
+    assert lock_delay_frames(13) == 4  # new level 13 gravity: 4 fpr
 
 
 def make_game(tmp_path, pieces=(Piece.I, Piece.O)):
-    """A Game on an isolated highscore file with a scripted piece stream.
-
-    The (I, O) default is the scoring recipe: the I completes a
-    prepared bottom row, the O is the next piece the test expects to
-    take over after the clear.
-    """
+    """A Game on an isolated highscore file with a scripted piece stream."""
     return Game(highscore_path=tmp_path / "highscore.json", rng=FixedRNG(pieces))
 
 
-def test_single_line_clear_scores_and_counts(tmp_path):
-    """A single clear must score, count, dissolve, then hand over.
+def _finish_clear(game) -> None:
+    """Apply a pending dissolve immediately (test convenience)."""
+    if game._clearing_rows is not None:
+        game.board.clear_rows(game._clearing_rows)
+        game._clearing_rows = None
 
-    Step 1: fill the bottom row EXCEPT columns 4..7, where the
-       horizontal I (spawning with its box at column 5, cells 5..8)
-       will drop in.
-    Step 2: teleport the I to row 22 and call `_lock()` directly --
-       the scoring event happens at lock time, so the test bypasses
-       the fall.
-    Step 3: assert the immediate effects, BEFORE any update() has run:
-       lines == 1, score == 100, and the row is still ON the board
-       (the dissolve has not removed it yet), with no piece active.
-    Step 4: advance CLEAR_ANIM_FRAMES (24 frames, about 0.4 s at
-       60 Hz) -- now the row is truly gone and the next piece (the O
-       from the FixedRNG script) has spawned.
 
-    The two-phase structure is the point: scoring is instant, board
-    cleanup takes a quarter of a second, and a new piece waits for it.
+def _lock_prepared_single(game) -> None:
+    """Clear any prior dissolve, prepare the bottom row, and lock an I."""
+    _finish_clear(game)
+    for x in (0, 1, 2, 3, 8, 9):
+        game.board.lock_cells([(x, 22)], 6)
+    game._piece_kind = Piece.I
+    game._rot = 0
+    game._piece_x = 4
+    game._piece_y = 22
+    game._lock()
+
+
+def _lock_prepared_double(game) -> None:
+    """Clear any prior dissolve, prepare two rows, and lock an O."""
+    _finish_clear(game)
+    for y in (21, 22):
+        for x in (0, 1, 2, 3, 6, 7, 8, 9):
+            game.board.lock_cells([(x, y)], 6)
+    game._piece_kind = Piece.O
+    game._rot = 0
+    game._piece_x = 4
+    game._piece_y = 21
+    game._lock()
+
+
+def _lock_prepared_triple(game) -> None:
+    """Clear any prior dissolve, prepare three rows, and lock a vertical I.
+
+    Rows 20-22 are complete except column 5; row 19 is left with column
+    0 empty so the vertical I completes exactly three rows, not four.
+    """
+    _finish_clear(game)
+    for y in (20, 21, 22):
+        for x in range(10):
+            if x != 5:
+                game.board.lock_cells([(x, y)], 6)
+    for x in range(1, 10):
+        if x != 5:
+            game.board.lock_cells([(x, 19)], 6)
+    game._piece_kind = Piece.I
+    game._rot = 1
+    game._piece_x = 4
+    game._piece_y = 19
+    game._lock()
+
+
+def test_single_line_clear_awards_are_pending_until_stage_end(tmp_path):
+    """A clear updates lines immediately but banks its award.
+
+    Step 1: fill the bottom row except where a horizontal I lands.
+    Step 2: lock it. Lines become 1; the single's 100 points go into the
+       pending stage award, not into `score` yet. Placement points (1 at
+       level 0, height 0) are immediate.
+    Step 3: the row is still on the board during the dissolve, and the
+       next piece waits.
     """
     game = make_game(tmp_path)
-    # Fill the bottom row except where the I piece will land (columns 4..7).
     for x in (0, 1, 2, 3, 8, 9):
         game.board.lock_cells([(x, 22)], 6)
     game._piece_x = 4
     game._piece_y = 22
     game._lock()
-    # Score, lines, and the dissolve start immediately; the rows stay
-    # visible and no new piece spawns until the dissolve finishes.
+
     assert game.lines == 1
-    assert game.score == points_for_clear(1)
-    assert not game.board.is_row_empty(22)  # still dissolving
+    assert game.score == placement_points(0, False, 0)
+    assert game._pending_stage_award == points_for_clear(1)
+    assert not game.board.is_row_empty(22)
     assert game.piece_kind is None
     assert game.status is Status.PLAYING
+
     for _ in range(CLEAR_ANIM_FRAMES):
         game.update()
-    assert game.board.is_row_empty(22)  # cleared and shifted
-    assert game.piece_kind is Piece.O  # next piece took over
+    assert game.board.is_row_empty(22)
+    assert game.piece_kind is Piece.O
 
 
 def test_clearing_state_event_reports_rows_and_frame(tmp_path):
-    """The protocol must translate the clear into VISIBLE coordinates.
+    """The protocol must translate the clear into VISIBLE coordinates."""
+    from tetris_core.protocol import Core
 
-    Step 1: prepare and lock a single-row clear (same recipe as the
-       previous test) through a Core, the protocol layer.
-    Step 2: the state event's `clearing` must name board row 22 as
-       visible row 19 (22 - HIDDEN_ROWS = 19 -- the extended-to-
-       visible shift the UI depends on) with frame 0.
-    Step 3: one update later the frame counter reads 1; after the full
-       24-frame dissolve, `clearing` is None and the next piece is
-       live.
-
-    The UI draws the flicker from this field alone; if the rows came
-    through in extended coordinates the flicker would appear three
-    rows too high (or be clipped away entirely).
-    """
     core = Core(
         highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O])
     )
@@ -185,7 +218,6 @@ def test_clearing_state_event_reports_rows_and_frame(tmp_path):
     game._piece_y = 22
     game._lock()
     state = core.state_event()
-    # Board row 22 is visible row 22 - HIDDEN_ROWS = 19.
     assert state["clearing"] == {"rows": [19], "frame": 0}
     game.update()
     assert core.state_event()["clearing"]["frame"] == 1
@@ -195,53 +227,135 @@ def test_clearing_state_event_reports_rows_and_frame(tmp_path):
     assert game.piece_kind is Piece.O
 
 
-def test_bonus_block_awarded_at_30_line_boundary(tmp_path):
-    """Clearing the line that completes a 30-block pays the 300 bonus.
+def test_stage_payout_accumulates_clear_awards(tmp_path):
+    """20 singles + 5 doubles pay 4,000 at the 30-line stage end.
 
-    Step 1: set the game to 29 lines (one short of the block) and
-       level 0.
-    Step 2: lock the prepared I to clear exactly one row.
-    Step 3: the counters move in one frame, before the dissolve: lines
-       29 -> 30 (the block completes), score = 100 (the single) + 300
-       (the block bonus), level 0 -> 1.
-
-    This is the payout structure of the whole game in miniature: the
-    clear award and the block bonus are separate line items, and both
-    are granted at lock time. It also drives the end-of-stage
-    celebration -- `game.py` notices the level change and freezes for
-    the 06/09 music.
+    Each clear banks its award. The 20th single is line 20; the five
+    doubles take the stage to exactly 30. The stage payout is credited
+    once, in addition to the 25 placement points (1 each at level 0).
     """
     game = make_game(tmp_path)
-    game.lines = BONUS_BLOCK_LINES - 1
-    game.level = 0
-    for x in (0, 1, 2, 3, 8, 9):
-        game.board.lock_cells([(x, 22)], 6)
+    assert game._next_stage_line == INITIAL_STAGE_LINES
+
+    for i in range(20):
+        _lock_prepared_single(game)
+        assert game.lines == i + 1
+        assert game._pending_stage_award == (i + 1) * 100
+
+    for i in range(5):
+        _lock_prepared_double(game)
+        assert game.lines == 20 + 2 * (i + 1)
+
+    assert game.lines == INITIAL_STAGE_LINES
+    assert game.level == 1
+    assert game._next_stage_line == INITIAL_STAGE_LINES + stage_lines_for_level(1)
+    assert game._pending_stage_award == 0
+    assert game.score == 25 + 4_000
+
+
+def test_stage_overshoot_triple_pays_one_stage(tmp_path):
+    """A triple from 149 to 152 completes exactly one stage.
+
+    The triple is worth 900 in that stage's payout. The next boundary is
+    200, not 180: the stage that just ended was the 30-line level-4
+    stage, and level 5 uses 50-line stages.
+    """
+    game = make_game(tmp_path)
+    game.lines = 149
+    game.level = 4
+    game._next_stage_line = 150
+
+    _lock_prepared_triple(game)
+
+    assert game.lines == 152
+    assert game.level == 5
+    assert game._next_stage_line == 200
+    assert game._pending_stage_award == 0
+    assert game.score == placement_points(4, False, 0) + points_for_clear(3)
+
+
+def test_stage_payouts_continue_after_level_cap(tmp_path):
+    """At the level cap, 800 and 850 are still real stage boundaries."""
+    game = make_game(tmp_path)
+    game.lines = 799
+    game.level = MAX_LEVEL
+    game._next_stage_line = 800
+
+    _lock_prepared_single(game)
+
+    assert game.lines == 800
+    assert game.level == MAX_LEVEL
+    assert game._next_stage_line == 850
+    assert game._pending_stage_award == 0
+    assert game.score == placement_points(MAX_LEVEL, False, 0) + points_for_clear(1)
+
+
+def test_nonzero_start_uses_its_own_stage_length(tmp_path):
+    """A game started at level 5 has a 50-line first stage."""
+    game = make_game(tmp_path)
+    game.new_game(level=5)
+    assert game.level == 5
+    assert game._next_stage_line == LATE_STAGE_LINES
+
+    game.lines = LATE_STAGE_LINES - 1
+    _lock_prepared_single(game)
+    assert game.lines == LATE_STAGE_LINES
+    assert game.level == 6
+    assert game._next_stage_line == LATE_STAGE_LINES * 2
+    assert game.score == placement_points(5, False, 0) + points_for_clear(1)
+
+
+def test_placement_uses_lowest_cell_and_soft_drop(tmp_path):
+    """Placement row height is the piece's lowest occupied cell.
+
+    A vertical I resting with its bottom cell on row 21 has height 1
+    (the bottom visible row is 0), so a normal level-0 placement earns
+    2 points. Holding Down doubles it.
+    """
+    game = make_game(tmp_path)
+    game._piece_kind = Piece.I
+    game._rot = 1
     game._piece_x = 4
-    game._piece_y = 22
+    game._piece_y = 18  # cells on rows 18..21; lowest is 21 -> h = 1
     game._lock()
-    # One line cleared: crosses the 30-line boundary exactly once. Score
-    # and level update immediately, before the dissolve finishes.
-    assert game.lines == BONUS_BLOCK_LINES
-    assert game.score == points_for_clear(1) + BLOCK_BONUS_POINTS
-    assert game.level == 1  # placeholder rule: one level per 30-line block
+    assert game.score == placement_points(0, False, 1)
+
+    game2 = make_game(tmp_path)
+    game2._piece_kind = Piece.I
+    game2._rot = 0
+    game2._piece_x = 4
+    game2._piece_y = 22  # bottom row -> h = 0
+    game2._soft_drop = True
+    game2._lock()
+    assert game2.score == placement_points(0, True, 0)
+
+
+def test_tetris_clear_awards_2500(tmp_path):
+    """Four rows at once pays 2,500 into the pending stage award.
+
+    Rows 19-22 are complete except for column 5; a vertical I fills that
+    column and clears all four rows. The clear value is 2,500, but it is
+    banked until the stage ends; the immediate score is only the
+    placement points.
+    """
+    game = make_game(tmp_path)
+    for y in range(19, 23):
+        for col in range(10):
+            if col != 5:
+                game.board.lock_cells([(col, y)], 6)
+    game._piece_kind = Piece.I
+    game._rot = 1
+    game._piece_x = 4
+    game._piece_y = 19
+    game._lock()
+
+    assert game.lines == 4
+    assert game._pending_stage_award == points_for_clear(4) == 2500
+    assert game.score == placement_points(0, False, 0)
 
 
 def test_color_index_changes_with_level():
-    """The locked-piece color cycles with a period of 10 levels.
-
-    Owner decision 2026-10-24 (spec 6.2): the locked color cycles every
-    10 levels — level 0 grayish white ... 8 purple, 9 green again —
-    then repeats (10 back to 0, 11 = 1, ...).
-
-    The mapping is `level % 10` into a 10-entry table, and the
-    assertions walk one full period to pin both ends of the wrap: level
-    9 is still index 9, level 10 wraps back to 0. The UI indexes its
-    LOCKED_COLORS table with this value, so a wrong wrap would repaint
-    every locked cell of every high level.
-    """
-    # Owner decision 2026-10-24 (spec 6.2): the locked color cycles every
-    # 10 levels — level 0 grayish white ... 8 purple, 9 green again —
-    # then repeats (10 back to 0, 11 = 1, ...).
+    """The locked-piece color cycles with a period of 10 levels."""
     from tetris_core.game import LOCKED_COLOR_INDICES, locked_color_index
 
     assert len(LOCKED_COLOR_INDICES) == 10
@@ -254,97 +368,70 @@ def test_color_index_changes_with_level():
 
 
 def test_cheat_set_level_jumps_level(tmp_path):
-    """The set_level cheat jumps level, color, AND the progression base.
+    """The set_level cheat jumps level, color, and the stage boundary.
 
-    Cheat (owner request 2026-10-25): jump to a level mid-game; gravity
-    and the locked color change immediately and progression continues
-    from the new level.
-
-    Three rules in one test:
-      - the jump works (level 8, and `_start_level` moves with it so
-        the next 30-line block builds on the new base rather than
-        snapping back);
-      - it clamps to the cheat range 0..9 (asking for 12 grants 9);
-      - it is refused once the game is over (False, state unchanged).
+    The cheat range stays 0..9 (the UI's digit keys), while normal
+    progression may reach 17. The jump anchors at the start of the
+    current stage, so progress inside that stage is preserved.
     """
-    # Cheat (owner request 2026-10-25): jump to a level mid-game; gravity
-    # and the locked color change immediately and progression continues
-    # from the new level.
-    core = Core(highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O]))
+    from tetris_core.game import locked_color_index
+    from tetris_core.protocol import Core
+
+    core = Core(
+        highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O])
+    )
     game = core.game
     assert game.level == 0
+    assert game._next_stage_line == INITIAL_STAGE_LINES
     assert game.set_level(8) is True
     assert game.level == 8
-    assert game._start_level == 8
+    assert game._next_stage_line == stage_lines_for_level(8)
     assert locked_color_index(game.level) == 8
-    # Clamped to the cheat range 0..9.
     assert game.set_level(12) is True
     assert game.level == 9
-    # Not while the game is over.
     game.status = Status.GAME_OVER
     assert game.set_level(3) is False
 
 
 def test_cheat_set_level_command(tmp_path):
-    """The protocol command wraps the cheat with input validation.
+    """The protocol command wraps the cheat with input validation."""
+    from tetris_core.protocol import Core
 
-    Step 1: a well-formed command gets TWO events: the response
-       (ok=True) and a state echo carrying the new level and the color
-       index the UI should switch to.
-    Step 2: three rejections -- out of range (10 > 9), missing
-       parameter, and a non-integer ("eight") -- each answered with
-       ok=False instead of a crash.
-
-    The UI's level-jump key sends this raw JSON; every one of these
-    malformed variants is something a user can produce with a stuck
-    key or a modified frontend.
-    """
-    core = Core(highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O]))
+    core = Core(
+        highscore_path=tmp_path / "highscore.json", rng=FixedRNG([Piece.I, Piece.O])
+    )
     replies = core.handle_line('{"cmd": "set_level", "level": 8}')
     assert replies[0]["ok"] is True
     assert replies[1]["level"] == 8
     assert replies[1]["color_index"] == 8
-    # Out-of-range, missing, and non-integer levels are rejected.
     assert core.handle_line('{"cmd": "set_level", "level": 10}')[0]["ok"] is False
     assert core.handle_line('{"cmd": "set_level"}')[0]["ok"] is False
     assert core.handle_line('{"cmd": "set_level", "level": "eight"}')[0]["ok"] is False
 
 
-def _lock_prepared_single(game) -> None:
-    """Clear any prior dissolve, prepare the bottom row, and lock an I."""
-    if game._clearing_rows is not None:
-        game.board.clear_rows(game._clearing_rows)
-        game._clearing_rows = None
-    for x in (0, 1, 2, 3, 8, 9):
-        game.board.lock_cells([(x, 22)], 6)
-    game._piece_kind = Piece.I
-    game._rot = 0
-    game._piece_x = 4
-    game._piece_y = 22
-    game._lock()
-
-
 def test_level_jump_does_not_recount_old_lines(tmp_path):
-    """A level jump anchors progression at the current 30-line block.
+    """A level jump anchors progression at the current stage start.
 
     Regression for the 30-to-31 boundary: at 30 lines the game is level 1.
     Selecting level 5 must not make the next single (line 31) jump to
-    level 6. The next level should arrive at line 60, after 30 more lines.
+    level 6. With level 5's 50-line stages the next level arrives at 80.
     """
     game = make_game(tmp_path)
-    game.lines = BONUS_BLOCK_LINES - 1
-    _lock_prepared_single(game)
-    assert game.lines == BONUS_BLOCK_LINES
-    assert game.level == 1
+    game.lines = INITIAL_STAGE_LINES
+    game.level = 1
+    game._next_stage_line = INITIAL_STAGE_LINES + stage_lines_for_level(1)
 
     assert game.set_level(5) is True
-    assert game._level_base_lines == BONUS_BLOCK_LINES
+    assert game.level == 5
+    assert game._next_stage_line == INITIAL_STAGE_LINES + LATE_STAGE_LINES
 
     _lock_prepared_single(game)
-    assert game.lines == BONUS_BLOCK_LINES + 1
+    assert game.lines == INITIAL_STAGE_LINES + 1
     assert game.level == 5
 
-    game.lines = BONUS_BLOCK_LINES * 2 - 1
+    game.lines = INITIAL_STAGE_LINES + LATE_STAGE_LINES - 1
+    game._next_stage_line = INITIAL_STAGE_LINES + LATE_STAGE_LINES
     _lock_prepared_single(game)
-    assert game.lines == BONUS_BLOCK_LINES * 2
+    assert game.lines == INITIAL_STAGE_LINES + LATE_STAGE_LINES
     assert game.level == 6
+    assert game._next_stage_line == INITIAL_STAGE_LINES + LATE_STAGE_LINES * 2

@@ -9,3 +9,4 @@ app/dist/
 app/src-tauri/target/
 *.tsbuildinfo
 tetris-tengen-code-review.md
+tetris-tengen-implementation-brief.md

@@ -54,6 +54,7 @@ from pathlib import Path
 # `import tetris_core` resolve regardless of the caller's CWD.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
+from tetris_core import highscore  # noqa: E402
 from tetris_core.game import CLEAR_ANIM_FRAMES, Game, Status  # noqa: E402
 from tetris_core.rng import PieceRNG  # noqa: E402
 
@@ -70,7 +71,9 @@ def run_one(seed: int) -> dict:
     piece sequence comes from PieceRNG(seed) and the autopilot adds no
     randomness), so a strange run can be replayed exactly.
     """
-    game = Game(rng=PieceRNG(seed=seed))
+    # A fresh game on a seeded RNG with a private score sink: benchmark
+    # workers must not write the desktop player's top-five table.
+    game = Game(highscore_path=highscore.NO_SAVE, rng=PieceRNG(seed=seed))
     game.set_autopilot("highscore")
     # Clear-size histogram, keyed 1..4 (singles..tetrises). Counted by
     # watching game.lines jump: one update() clears at most one set of

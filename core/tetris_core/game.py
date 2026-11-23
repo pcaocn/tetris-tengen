@@ -36,11 +36,10 @@ from .gravity import frames_per_row, soft_drop_fpr
 from .pieces import Piece, ROTATIONS
 from .rng import PieceRNG
 from .scoring import (
-    BLOCK_BONUS_POINTS,
-    LEVEL_LINES,
-    block_bonuses,
-    level_for_lines,
+    MAX_LEVEL,
+    placement_points,
     points_for_clear,
+    stage_lines_for_level,
 )
 from .stats import PieceStats
 
@@ -67,7 +66,7 @@ DAS_REPEAT = 4
 LOCK_DELAY_FRAMES = 10
 
 
-def lock_delay_frames(level: int) -> int:
+def lock_delay_frames(level: int) -> float:
     return min(LOCK_DELAY_FRAMES, frames_per_row(level))
 
 
@@ -133,8 +132,7 @@ class Game:
         music: str | None = None,
         handicap: int = 0,
     ) -> None:
-        if level < 0:
-            level = 0
+        level = max(0, min(level, MAX_LEVEL))
         self.music = music
         self.board = Board()
         # Handicap rows (owner request 2026-10-25): unfinished garbage
@@ -150,12 +148,14 @@ class Game:
                 )
         self.score = 0
         self.lines = 0
-        self._start_level = level
-        # Line count at the last level anchor. Level progression is measured
-        # from this point, not from the whole run, so a mid-game level jump
-        # cannot re-count every 30-line block that predates it.
-        self._level_base_lines = 0
         self.level = level
+        # The next stage boundary is tracked independently of the displayed
+        # level. The level caps at 17, but 800, 850, ... are still real
+        # stage boundaries that pay and celebrate.
+        self._next_stage_line = stage_lines_for_level(self.level)
+        # Clear awards accumulate here and are credited once, at stage end.
+        # They are not paid immediately on each clear.
+        self._pending_stage_award = 0
         self.stats = PieceStats()
         self.status = Status.PLAYING
         self._piece_kind: Piece | None = None
@@ -163,6 +163,7 @@ class Game:
         self._piece_y = 0
         self._rot = 0
         self._gravity_counter = 0
+        self._gravity_threshold = 0
         self._rest_frames = 0
         self._soft_drop = False
         self._soft_held = 0
@@ -355,19 +356,18 @@ class Game:
     def set_level(self, level: int) -> bool:
         """Cheat (owner request 2026-10-25): jump to the given level
         mid-game. Gravity and the locked color change immediately; the
-        start level moves too, so progression continues from the new
-        level instead of reverting on the next clear.
+        next stage boundary moves with the new level.
 
-        The line anchor moves to the start of the current 30-line block.
-        Without that, the next clear would add every block completed by
-        the whole run to the new level (for example, level 5 at line 30
-        then jumping to level 6 on line 31).
+        The jump anchors at the start of the current stage, preserving
+        the progress already made inside it. Without that, selecting
+        level 5 at line 30 would make line 31 jump straight to level 6
+        (the old whole-run line total would be counted again).
         """
         if self.status is not Status.PLAYING:
             return False
+        stage_start = self._next_stage_line - stage_lines_for_level(self.level)
         self.level = max(0, min(level, 9))
-        self._start_level = self.level
-        self._level_base_lines = (self.lines // LEVEL_LINES) * LEVEL_LINES
+        self._next_stage_line = stage_start + stage_lines_for_level(self.level)
         return True
 
     # ------------------------------------------------------------------
@@ -535,9 +535,15 @@ class Game:
     def _apply_gravity(self) -> bool:
         """Move the piece down one row if the fall timer has expired.
 
-        The fall speed is decided entirely in `gravity.py`; this method
-        only counts frames and applies the result. That split keeps the
-        speed table (the part that still needs verifying) in one file.
+        Gravity is measured in quarter-frame units so the cartridge's
+        fractional intervals (5.5, 3.75, ...) are exact. Each tick adds 4
+        units; a row is dropped when the accumulator reaches the interval
+        times 4. At most one row is dropped per tick.
+
+        When the effective speed increases (Down pressed, or a level-up),
+        any excess accumulated time is discarded rather than banked: it
+        must not cause a burst of drops or a backlog that keeps dropping
+        after the speed changes back.
         """
         if self._soft_drop:
             # Count how long Down has been held: the soft drop accelerates
@@ -549,13 +555,15 @@ class Game:
             # drop starts from the slow end of the curve again.
             self._soft_held = 0
             fpr = frames_per_row(self.level)
-        # The counter accumulates every frame; the piece falls when it
-        # reaches the frames-per-row value for the current speed.
-        self._gravity_counter += 1
-        if self._gravity_counter >= fpr:
-            # Reset the counter (not to zero but by subtraction is
-            # equivalent here) and drop the piece one row.
-            self._gravity_counter = 0
+        threshold = max(1, int(round(fpr * 4)))
+        if threshold < self._gravity_threshold and self._gravity_counter >= threshold:
+            # Speed increased: keep at most one tick of progress, not the
+            # whole stale backlog.
+            self._gravity_counter = threshold - 4
+        self._gravity_threshold = threshold
+        self._gravity_counter += 4
+        if self._gravity_counter >= threshold:
+            self._gravity_counter -= threshold
             self._piece_y += 1
             return True
         return False
@@ -607,6 +615,12 @@ class Game:
         written into the grid FIRST, then the completed rows are found,
         then the score/lines/level are updated immediately — even though
         the rows themselves stay on screen for the dissolve animation.
+
+        Scoring has two parts:
+          - placement points for the lock itself, using the level and
+            drop state at landing (before any stage advance);
+          - clear awards accumulated into a pending stage award, paid
+            once when the stage ends.
         """
         if self._piece_kind is None:
             return
@@ -614,11 +628,17 @@ class Game:
         # counter; the state event carries it and the UI plays a
         # synthesized brick-thud on each increment.
         self.lock_count += 1
+        cells = self.piece_cells()
         # Write the piece's four cells into the grid. The value stored is
         # the piece index; the UI paints it with the LEVEL's locked color
         # (spec 6.2), which is why the grid stores the piece kind and not
         # a color.
-        self.board.lock_cells(self.piece_cells(), int(self._piece_kind))
+        self.board.lock_cells(cells, int(self._piece_kind))
+        # Placement points are awarded exactly once per lock. The row
+        # height is the lowest occupied cell, with 0 on the bottom visible
+        # row (the disassembly's bitmap-scan mapping).
+        row_height = (HEIGHT - 1) - max(y for _, y in cells)
+        self.score += placement_points(self.level, self._soft_drop, row_height)
         # There is no active piece until the next one spawns. During the
         # clear animation this is what makes the UI draw no piece.
         self._piece_kind = None
@@ -632,31 +652,33 @@ class Game:
         # per clear event (1-4 rows); the UI plays a dismantle "poo-ch"
         # on each increment.
         self.clear_count += 1
-        # Lines completed (spec 4.5): score, lines, and level update
-        # immediately; the rows dissolve in place for CLEAR_ANIM_FRAMES
-        # before being removed and the next piece spawns.
-        lines_before = self.lines
+        # Lines completed (spec 4.5): lines update immediately; the rows
+        # dissolve in place for CLEAR_ANIM_FRAMES before being removed and
+        # the next piece spawns.
         self.lines += len(rows)
-        # The clear award (100/400/900/2500) plus any 30-line block
-        # bonuses the clear completed.
-        self.score += points_for_clear(len(rows))
-        self.score += BLOCK_BONUS_POINTS * block_bonuses(lines_before, self.lines)
-        new_level = level_for_lines(
-            self._start_level, self.lines, self._level_base_lines
-        )
-        if new_level > self.level:
-            # The level went UP: this clear completed a 30-line block, so
-            # the end-of-stage celebration must play (spec 5).
-            self._celebrate = True
-            self.level = new_level
-        elif new_level < self.level:
-            # The level went DOWN (only possible via the level cheat).
-            self.level = new_level
+        # The clear award (100/400/900/2500) is NOT paid immediately. It
+        # accumulates in the pending stage award and is credited once the
+        # stage ends. This is the cartridge's stage-payout rule.
+        self._pending_stage_award += points_for_clear(len(rows))
+        # Stage boundary crossed? Pay the pending award once, advance the
+        # displayed level (capped at 17), and schedule the celebration.
+        # The next boundary is tracked separately so 800/850/... still
+        # pay after the cap.
+        while self.lines >= self._next_stage_line:
+            self._complete_stage()
         # Remember the rows and start the dissolve animation. The rows
         # are still IN the grid at this point -- they are removed later,
         # when the animation ends in `update()`.
         self._clearing_rows = rows
         self._clearing_frame = 0
+
+    def _complete_stage(self) -> None:
+        """Pay the pending stage award and open the next stage."""
+        self.score += self._pending_stage_award
+        self._pending_stage_award = 0
+        self.level = min(MAX_LEVEL, self.level + 1)
+        self._next_stage_line += stage_lines_for_level(self.level)
+        self._celebrate = True
 
     def _spawn_next(self) -> None:
         """Promote the previewed piece to the active piece, or end the game.
@@ -677,6 +699,7 @@ class Game:
         self._rot = 0  # every piece spawns in rotation state 0
         # Reset the per-piece timers.
         self._gravity_counter = 0
+        self._gravity_threshold = 0
         self._soft_held = 0
         self._rest_frames = 0
         # The autopilot must plan again for the new piece (the board

@@ -1,82 +1,102 @@
-"""Fall speed table and soft drop acceleration (spec 4.3).
+"""Gravity timing in 60 Hz frames.
 
-VERIFY (spec 4.3): the Tengen speed table must be looked up in a cited
-source; Nintendo values must not be used. The table below is a PLACEHOLDER
-so the game is playable while the source is tracked down (open item).
+WHAT THIS FILE IMPLEMENTS
+=========================
+- ``frames_per_row(level)``: the Tengen cartridge's normal-gravity
+  interval for levels 0..17, in frames per row.
+- ``soft_drop_fpr(normal, held)``: the effective interval while the Down
+  key is held, with two guard rails (never slower than normal gravity,
+  never faster than one row per frame).
 
-VERIFY (spec 4.3): Tengen soft drop speeds up gradually while held rather
-than jumping to a fixed speed. The exact curve is TBD; the constants below
-are a PLACEHOLDER pending a documented source.
+EVIDENCE AND SOURCES
+====================
+- The normal-gravity table is the Tengen NES table published on
+  TetrisWiki ("Tetris (NES, Tengen)", Gravity page):
 
-HOW GRAVITY IS MODELLED
------------------------
-Tetris gravity is measured in FRAMES PER ROW (fpr), not in rows per
-second: the piece falls one row every `fpr` frames. At 60 Hz, an fpr of
-6 means 10 rows per second.
+      level:  0   1   2   3   4   5   6  7  8  9  10   11  12   13   14   15   16  17
+      frames:33  28  24  20  17  14  11  9  7  6  5.5  5   4.5  4    3.75 3.5  3.25 3
 
-Working in frames (rather than seconds) is deliberate: the game loop is
-fixed at 60 Hz (spec 2.1), so an integer frame count makes the fall
-exactly reproducible for a given seed -- which is what lets the autopilot
-benchmarks be deterministic and comparable.
-
-The two functions here are the ONLY place a fall speed is decided:
-  - `frames_per_row(level)`   -> normal gravity for a level
-  - `soft_drop_fpr(normal, held)` -> gravity while the Down key is held
+  The original table has fractional averages for the faster levels; this
+  file stores those decimals directly and the game keeps fractional
+  progress in quarter-frame units, so 5.5 and 3.75 are exact.
+- The soft-drop acceleration curve is still the provisional Tengen-style
+  curve (spec 4.3). It starts at 6 frames per row and loses one frame per
+  row every four held frames, flooring at one row per frame. Holding
+  Down therefore always helps, never hurts, and a short tap does not
+  teleport the piece.
 """
 
 from __future__ import annotations
 
+# Normal gravity, in frames per row, for levels 0..17. Indexed by level
+# with clamping at both ends so a malformed level can never index past
+# the table.
+FALL_SPEEDS: tuple[float, ...] = (
+    33,
+    28,
+    24,
+    20,
+    17,
+    14,
+    11,
+    9,
+    7,
+    6,
+    5.5,
+    5,
+    4.5,
+    4,
+    3.75,
+    3.5,
+    3.25,
+    3,
+)
 
-# Frames per row by level. Index = level. Beyond the table, the last value.
-# Smaller number = faster fall. Level 0 is the slowest (50 frames = about
-# 1.2 rows/second); by level 13 the piece falls a row every 2 frames.
-FALL_SPEEDS = (50, 42, 35, 29, 24, 19, 15, 12, 9, 6, 5, 4, 3, 2)
-
-# Soft drop model: effective frames-per-row starts at SOFT_DROP_START_FPR and
-# drops by 1 for every SOFT_DROP_ACCEL_EVERY frames the key is held, floored
-# at SOFT_DROP_MIN_FPR, and never slower than normal gravity.
+# --- soft drop acceleration (VERIFY, spec 4.3) ---------------------------
 #
-# This is the "speeds up GRADUALLY while held" behaviour the spec
-# describes for Tengen (spec 4.3) -- as opposed to Nintendo's fixed
-# 2x-speed soft drop. Holding Down is therefore a two-stage action: a
-# brief slow phase, then a faster one.
-SOFT_DROP_START_FPR = 6  # frames per row in the first moments of holding
-SOFT_DROP_ACCEL_EVERY = 4  # held frames per 1-frame-per-row acceleration step
-SOFT_DROP_MIN_FPR = 1  # fastest the fall can get (one row per frame)
+# The curve below is the current PLACEHOLDER: Tengen's exact soft-drop
+# acceleration has not been confirmed. It is deliberately a curve rather
+# than a fixed multiplier: holding Down starts at SOFT_DROP_START_FPR
+# (6 fpr) and loses one frame per row every SOFT_DROP_ACCEL_EVERY frames
+# held, down to a floor of SOFT_DROP_MIN_FPR (1 fpr).
+#
+# Guard rails:
+#   - never slower than normal gravity for the level (min(normal, soft));
+#   - never faster than one row per frame.
+#
+# Replace these constants when a source for the real curve is found; the
+# tests in test_gravity.py pin every step of this provisional curve.
+
+SOFT_DROP_START_FPR = 6  # frames per row on the first frame Down is held
+SOFT_DROP_ACCEL_EVERY = 4  # held frames per one-frame speed-up step
+SOFT_DROP_MIN_FPR = 1  # floor: one row per frame
 
 
-def frames_per_row(level: int) -> int:
-    """Normal gravity for a level, in frames per row.
+def frames_per_row(level: int) -> float:
+    """Falling speed for a level, in frames per row.
 
-    Two clamping rules:
-      - Levels below 0 are treated as level 0.
-      - Levels past the end of the table keep the last (fastest) value,
-        so the game stays playable if the level ever exceeds 13.
+    Levels past the end of the table use the last (fastest) entry; a
+    negative level uses level 0. The return value is a float because the
+    cartridge has fractional intervals at levels 10, 12, 14, 15 and 16.
     """
     if level < 0:
-        level = 0
+        return FALL_SPEEDS[0]
     if level < len(FALL_SPEEDS):
         return FALL_SPEEDS[level]
     return FALL_SPEEDS[-1]
 
 
-def soft_drop_fpr(normal_fpr: int, frames_held: int) -> int:
-    """Effective frames-per-row while soft drop is held.
+def soft_drop_fpr(normal_fpr: float, frames_held: int) -> float:
+    """Effective frames per row while the Down key has been held.
 
-    `frames_held` is how many frames the Down key has been down so far.
-    The integer division by SOFT_DROP_ACCEL_EVERY is what makes the
-    acceleration stepwise (one step per 4 held frames) rather than a
-    smooth ramp.
-
-    Two floors/ceilings are applied:
-      - Never faster than SOFT_DROP_MIN_FPR (the acceleration stops there).
-      - Never SLOWER than normal gravity: if the level is already faster
-        than the soft-drop start value (a high level), holding Down must
-        not actually slow the piece down.
+    Starts at SOFT_DROP_START_FPR, loses one frame per row every
+    SOFT_DROP_ACCEL_EVERY held frames, floors at SOFT_DROP_MIN_FPR, and
+    is never slower than normal gravity.
     """
-    fpr = SOFT_DROP_START_FPR - frames_held // SOFT_DROP_ACCEL_EVERY
+    fpr = float(SOFT_DROP_START_FPR)
+    steps = frames_held // SOFT_DROP_ACCEL_EVERY
+    if steps:
+        fpr -= steps
     if fpr < SOFT_DROP_MIN_FPR:
-        fpr = SOFT_DROP_MIN_FPR
-    if fpr > normal_fpr:
-        fpr = normal_fpr
-    return fpr
+        fpr = float(SOFT_DROP_MIN_FPR)
+    return min(float(normal_fpr), fpr)

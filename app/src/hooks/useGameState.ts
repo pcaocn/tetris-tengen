@@ -94,14 +94,22 @@ export function useGameState() {
     // promises are collected and every cleanup awaits them. Without this,
     // unmounting before they resolve would leave zombie listeners (which
     // StrictMode's double-mount would immediately expose as doubled state).
+    let alive = true;
+    let liveVersion = 0;
+    let lifecycleVersion = 0;
+
     const subscriptions: Promise<UnlistenFn>[] = [
       listen<GameState>("game-state", (event) => {
+        liveVersion += 1;
+        if (!alive) return;
         setState(event.payload);
         // A fresh snapshot means the core is healthy again: drop any
         // stale notice from a restart.
         setNotice(null);
       }),
       listen<Record<string, unknown>>("core-event", (event) => {
+        lifecycleVersion += 1;
+        if (!alive) return;
         const payload = event.payload ?? {};
         // Lifecycle messages from the shell about the CORE process
         // (distinct from game-state, which is about the GAME).
@@ -118,25 +126,50 @@ export function useGameState() {
         }
       }),
     ];
-    // Ask the shell for its cached startup result. This is what recovers an
-    // early spawn failure: the `core-error` event may have fired before this
-    // effect subscribed, so listening alone can never see it.
-    invoke<CoreStatusSnapshot>("get_core_status")
-      .then((snapshot) => {
-        if (snapshot.state) setState(snapshot.state);
-        // Only a fatal status clears/raises here. A stale "running"
-        // response must never erase a newer core-error event.
-        if (snapshot.status === "error") {
-          setError(snapshot.error ?? "Python core failed to start.");
-        }
+    // Do not query the cached status until BOTH listeners are attached.
+    // Otherwise an early core-error/core-started event can land in the
+    // gap and be overwritten by a stale query response.
+    Promise.all(subscriptions)
+      .then(() => {
+        if (!alive) return;
+        // Snapshot the lifecycle versions at query time. If a newer live
+        // state or lifecycle event arrives before the query resolves, its
+        // version will differ and the older result must not overwrite it.
+        const stateVersion = liveVersion;
+        const lifecycleAtQuery = lifecycleVersion;
+        // Ask the shell for its cached startup result. This is what
+        // recovers an early spawn failure: the `core-error` event may
+        // have fired before this effect subscribed, so listening alone
+        // can never see it.
+        invoke<CoreStatusSnapshot>("get_core_status")
+          .then((snapshot) => {
+            if (!alive) return;
+            if (snapshot.state && stateVersion === liveVersion) {
+              setState(snapshot.state);
+            }
+            // Only a fatal status raises here. A stale "running" response
+            // must never erase a newer core-error event.
+            if (
+              snapshot.status === "error" &&
+              lifecycleAtQuery === lifecycleVersion
+            ) {
+              setError(snapshot.error ?? "Python core failed to start.");
+            }
+          })
+          .catch(() => {});
+        // Also ask for a fresh state; harmless if the core is not up yet,
+        // the first state event will still arrive once it starts.
+        invoke("get_state").catch(() => {});
       })
-      .catch(() => {});
-    // Also ask for a fresh state; harmless if the core is not up yet, the
-    // first state event will still arrive once it starts.
-    invoke("get_state").catch(() => {});
+      .catch(() => {
+        if (alive) setError("Python core failed to start.");
+      });
     // Cleanup: unsubscribe in the same order, swallowing errors — a
     // rejected subscription promise at teardown must not mask anything.
     return () => {
+      alive = false;
+      // Unsubscribe each listener when its promise resolves. This covers
+      // both "resolved before cleanup" and "resolves after cleanup".
       subscriptions.forEach((p) => p.then((f) => f()).catch(() => {}));
     };
   }, []);

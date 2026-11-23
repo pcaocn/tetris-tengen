@@ -134,13 +134,14 @@ start.
 | Home (cheat only) | Autopilot: high-score strategy |
 | End (cheat only) | Autopilot: quick-clear strategy |
 
-Scoring, per line-clear event: **SINGLE 100 · DOUBLE 400 · TRIPLE 900 ·
-TETRIS 2500**, shown as a label inside the cleared rows while they wipe
-from the center outward. The locked-cell color changes with the level
-and repeats every 10 levels. The stats bars fill slowly — one bar is full
-at 120 pieces of a kind (roughly level 10). Clearing a 30-line stage
-freezes the game for the end-of-stage celebration; press **Enter** to
-continue to the next level.
+Placement points are awarded on every lock. Per line-clear event, the
+award is **SINGLE 100 · DOUBLE 400 · TRIPLE 900 · TETRIS 2500**, shown as
+a label inside the cleared rows while they wipe from the center outward.
+Clear awards are banked and paid once at stage completion. The locked-cell
+color changes with the level and repeats every 10 levels. The stats bars
+fill slowly — one bar is full at 120 pieces of a kind (roughly level 10).
+Clearing a stage (30 lines early, 50 later) freezes the game for the
+end-of-stage celebration; press **Enter** to continue to the next level.
 
 ### Cheat mode
 
@@ -157,7 +158,7 @@ once and the next level starts by itself — no Enter needed.
 ## Development
 
 ```sh
-# Python core tests (205 tests)
+# Python core tests (227 tests)
 cd core && uv run pytest
 
 # Front-end type check, music state-machine test, and build
@@ -298,6 +299,11 @@ uv run python simulate_autopilot.py --strategy quick --runs 100 --workers 4 \
 >
 > That run takes roughly an hour on four workers; it is a background
 > job, not an interactive one.
+>
+> **Ruleset note:** the shipped CSVs predate the Tengen gravity,
+> placement-scoring, stage-payout and level-curve changes. They are kept
+> as measurements of the old ruleset; label any new comparison with its
+> commit or ruleset.
 
 The report prints the score and line distributions, the **clear mix**
 (what share of the clears were singles/doubles/triples/tetrises — the
@@ -351,8 +357,8 @@ the new profile reproduces the swept numbers.
 - `png/` — local reference captures (gitignored; not shipped).
 - `TENGEN_TETRIS_SPEC.md` — the authoritative spec. Sections marked
   **VERIFY/TBD** are placeholder rules awaiting source confirmation
-  (level progression is currently 1 level per 30 lines, with a 30-line
-  block bonus).
+  (level progression is 30 lines per stage through level 5, then 50; the
+  remaining open item is the exact soft-drop curve).
 
 ### Useful notes
 

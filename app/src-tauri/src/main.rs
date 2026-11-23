@@ -152,7 +152,9 @@ impl PythonCore {
         inner.stdin = Some(child.stdin.take().ok_or("python stdin unavailable")?);
         inner.stdout = Some(child.stdout.take().ok_or("python stdout unavailable")?);
         inner.child = Some(child);
-        inner.startup_status = CoreStartupStatus::Running;
+        // OS spawn is not readiness. Stay in Starting until the first
+        // valid game-state snapshot is cached (see `cache_state`).
+        inner.startup_status = CoreStartupStatus::Starting;
         inner.startup_error = None;
         Ok(())
     }
@@ -180,16 +182,52 @@ impl PythonCore {
         Ok(())
     }
 
-    /// Cache the newest state event.
-    fn store_latest(&self, state: Value) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.latest_state = Some(state);
+    /// Cache the newest state event. Returns true only for the first
+    /// valid snapshot, which is the moment the child becomes ready.
+    fn cache_state(&self, state: Value) -> bool {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(_) => return false,
+        };
+        inner.latest_state = Some(state);
+        if inner.startup_status == CoreStartupStatus::Starting {
+            inner.startup_status = CoreStartupStatus::Running;
+            inner.startup_error = None;
+            true
+        } else {
+            false
         }
+    }
+
+    /// True once a valid state snapshot has been cached.
+    fn is_ready(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|inner| inner.startup_status == CoreStartupStatus::Running)
+            .unwrap_or(false)
     }
 
     /// The cached state, cloned out so the caller can own it.
     fn latest_state(&self) -> Option<Value> {
         self.inner.lock().ok()?.latest_state.clone()
+    }
+
+    /// Reap the child and detach its pipes. If stdout closed while the
+    /// child was still alive, terminate it so a pre-readiness failure
+    /// cannot hang the supervisor.
+    fn reap_child(&self) -> Option<std::process::ExitStatus> {
+        let mut inner = self.inner.lock().ok()?;
+        inner.stdin = None;
+        inner.stdout = None;
+        let mut child = inner.child.take()?;
+        match child.try_wait() {
+            Ok(Some(status)) => Some(status),
+            Ok(None) => {
+                let _ = child.kill();
+                child.wait().ok()
+            }
+            Err(_) => None,
+        }
     }
 
     /// Record the current startup phase and any fatal error.
@@ -221,6 +259,10 @@ impl PythonCore {
         if self.supervising.swap(true, Ordering::Relaxed) {
             return;
         }
+        // A manual Retry lands here after a pre-readiness failure. Clear
+        // the old error immediately; the child is not Running until its
+        // first state snapshot arrives.
+        self.set_startup_status(CoreStartupStatus::Starting, None);
         // The supervisor thread needs its own Arc to keep the core alive.
         let core = Arc::clone(self);
         let _ = thread::Builder::new()
@@ -336,10 +378,9 @@ fn supervise(app: AppHandle, core: Arc<PythonCore>) {
             );
             return;
         }
-        // Tell the UI the core is up, so it can leave the "connecting"
-        // state.
-        let _ = app.emit("core-event", json!({ "type": "core-started" }));
-        // Read the core's stdout line by line until it closes.
+        // Read the core's stdout line by line until it closes. The first
+        // valid state line flips Starting -> Running and emits
+        // `core-started`; log lines and command responses do not.
         if let Some(stdout) = core.take_stdout() {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
@@ -348,10 +389,32 @@ fn supervise(app: AppHandle, core: Arc<PythonCore>) {
         }
         // If the app is shutting down, do not restart.
         if core.shutting_down.load(Ordering::Relaxed) {
+            core.reap_child();
             return;
         }
-        // Python exited during play: restart it. The in-progress game is
-        // lost and the UI shows "Game reset." (spec section 8).
+        if !core.is_ready() {
+            // The child closed stdout before producing a single valid
+            // state. This is a startup failure, not a mid-game crash:
+            // reap it, publish a readable error, and require a manual
+            // Retry instead of looping through 250 ms respawns.
+            let status = core.reap_child();
+            let message = match status {
+                Some(status) => {
+                    format!("python exited before sending state ({status})")
+                }
+                None => "python exited before sending state".to_string(),
+            };
+            core.set_startup_status(CoreStartupStatus::Error, Some(message.clone()));
+            core.supervising.store(false, Ordering::Relaxed);
+            let _ = app.emit(
+                "core-event",
+                json!({ "type": "core-error", "message": message }),
+            );
+            return;
+        }
+        // Python exited after a healthy run: restart it. The in-progress
+        // game is lost and the UI shows "Game reset." (spec section 8).
+        core.reap_child();
         let _ = app.emit(
             "core-event",
             json!({ "type": "core-restarted", "message": "Game reset." }),
@@ -362,24 +425,38 @@ fn supervise(app: AppHandle, core: Arc<PythonCore>) {
     }
 }
 
+/// A valid game-state snapshot: the Python core's state object with a
+/// status string and a board array. A log or response is not readiness.
+fn is_game_state(msg: &Value) -> bool {
+    msg.get("type").and_then(Value::as_str) == Some("state")
+        && msg.get("status").and_then(Value::as_str).is_some()
+        && msg.get("board").map(Value::is_array).unwrap_or(false)
+}
+
 /// Route one line of the core's stdout to the right place.
 ///
 /// `state` events go to the UI as `game-state` (the channel the React
 /// app listens on); everything else (`response`, `log`) goes to
-/// `core-event` for diagnostics.
-fn handle_message(app: &AppHandle, core: &PythonCore, line: &str) {
+/// `core-event` for diagnostics. Returns true only when this line was
+/// the first valid state and therefore made the child ready.
+fn handle_message(app: &AppHandle, core: &PythonCore, line: &str) -> bool {
     // A line that is not valid JSON is ignored: the core is supposed to
     // only write JSON, but a stray print must not kill the supervisor.
     let Ok(msg) = serde_json::from_str::<Value>(line) else {
-        return;
+        return false;
     };
-    if msg.get("type").and_then(Value::as_str) == Some("state") {
-        // Cache it so `get_state` can answer without a round trip.
-        core.store_latest(msg.clone());
+    if is_game_state(&msg) {
+        let became_ready = core.cache_state(msg.clone());
+        if became_ready {
+            // Readiness is a state snapshot, not an OS spawn or a log.
+            let _ = app.emit("core-event", json!({ "type": "core-started" }));
+        }
         let _ = app.emit("game-state", msg);
+        became_ready
     } else {
         // responses and log events, forwarded for diagnostics (spec 2.3)
         let _ = app.emit("core-event", msg);
+        false
     }
 }
 
@@ -520,5 +597,36 @@ mod tests {
         let snapshot = core.status_snapshot().expect("status snapshot");
         assert_eq!(snapshot["status"], "error");
         assert_eq!(snapshot["error"], "spawn failed");
+    }
+
+    #[test]
+    fn first_valid_state_marks_child_ready_and_clears_error() {
+        let core = PythonCore::new();
+        core.set_startup_status(CoreStartupStatus::Starting, Some("old error".into()));
+        assert!(!core.is_ready());
+
+        let state = json!({"type": "state", "status": "playing", "board": []});
+        assert!(core.cache_state(state.clone()));
+        assert!(core.is_ready());
+        let snapshot = core.status_snapshot().expect("status snapshot");
+        assert_eq!(snapshot["status"], "running");
+        assert!(snapshot["error"].is_null());
+        assert_eq!(snapshot["state"], state);
+
+        // A second state is ordinary play, not another readiness edge.
+        assert!(!core.cache_state(json!({"type": "state", "status": "playing", "board": []})));
+    }
+
+    #[test]
+    fn only_a_game_state_counts_as_readiness() {
+        assert!(is_game_state(
+            &json!({"type": "state", "status": "playing", "board": []})
+        ));
+        assert!(!is_game_state(
+            &json!({"type": "log", "message": "starting"})
+        ));
+        assert!(!is_game_state(
+            &json!({"type": "state", "status": "playing"})
+        ));
     }
 }

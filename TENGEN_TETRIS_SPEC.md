@@ -84,7 +84,7 @@ Rules:
 
 ### 2.3 Rust process
 
-- Spawns the Python process at startup and restarts it if it exits.
+- Spawns the Python process at startup and keeps it **Starting** until the first valid state snapshot. A child that exits before that snapshot is a startup failure: the shell reaps it, emits `core-error`, and waits for a manual Retry. A child that exits after a ready state is restarted automatically.
 - Exposes Tauri commands that forward to Python: `send_input(action)`, `new_game(level, music, handicap)`, `pause()`, `get_state()`, and the cheat commands `set_level`, `set_music`, `set_autopilot`.
 - Keeps the latest state in memory and emits a `game-state` event to the UI for each `state` message.
 - Does not interpret game data.
@@ -176,9 +176,18 @@ tengen-tetris/
 
 ### 4.3 Gravity and soft drop
 
-- Each level has a fall speed: the number of frames per row. **VERIFY** the full speed table for Tengen. Do not use the Nintendo table.
-- **Soft drop** speeds up gradually while held, rather than jumping to a fixed speed. This is a known Tengen behavior (confirmed by nesdev forum discussion). **VERIFY** the exact acceleration curve, including its starting and ending speeds, from a source that documents it. If no source gives exact numbers, mark it TBD and ask the owner.
-- Gravity values from the Nintendo version must not be used.
+The normal-gravity intervals are the Tengen cartridge table (frames per row at 60 Hz):
+
+```
+level:  0   1   2   3   4   5   6  7  8  9  10   11  12   13   14   15   16  17
+fpr:   33  28  24  20  17  14  11  9  7  6  5.5  5   4.5  4    3.75 3.5  3.25 3
+```
+
+Levels past 17 use the last entry (3 fpr); a negative level uses level 0. The game keeps fractional progress in quarter-frame units (add 4 per tick, drop when the accumulator reaches `fpr * 4`, subtract the threshold), so 5.5, 3.75, 3.25 and 3.5 are exact. When the effective speed increases (Down pressed or a level-up), stale accumulator progress is discarded rather than banked, so a speed change cannot cause a burst of drops or a backlog. The accumulator resets on each new piece.
+
+Soft drop is a provisional Tengen-style acceleration curve, not a source-confirmed cartridge curve: while Down is held, use the faster of normal gravity and a curve that starts at 6 fpr, loses one frame per row every four held frames, and floors at 1 fpr. Holding Down therefore always helps, never hurts.
+
+Source: TetrisWiki, "Tetris (NES, Tengen)" gravity table. Open item: the exact soft-drop curve.
 
 ### 4.4 Lock delay
 
@@ -187,12 +196,13 @@ tengen-tetris/
 
 ### 4.5 Line clears, scoring, and levels
 
-- Per-clear award values, owner-verified 2026-10-24 from the award table in `png/screenshot_28.png`: single **100**, double **400**, triple **900**, tetris **2500** (`POINTS_FOR_CLEAR` in `scoring.py`). Score, lines, and level update immediately when the piece locks.
-- Line-clear animation (owner decisions 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and are wiped **from the center to both sides** — one column-pair every 4 frames (pairs {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; `WIPE_FRAMES_PER_PAIR` in `theme.ts`) — then the rows are removed and the next piece spawns after `CLEAR_ANIM_FRAMES` (24). While the wipe runs, the award label **SINGLE / DOUBLE / TRIPLE / TETRIS** (by number of rows) shows centered **inside the cleared row(s)** (`CLEAR_LABELS`). The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the wipe and the label.
-- Tengen awards line-clear bonuses only after each 30 lines. **VERIFY** this against the source, including what happens to lines cleared that are not part of a bonus block.
-- Level progression: **VERIFY** how the level advances (for example, every 10 lines, or as Tengen defines it). Do not assume the Nintendo rule.
-- Cheat (owner request 2026-10-25): typing the classic Konami sequence on the title screen — **↑ ↑ ↓ ↓ ← → ← → B A**, physical keys — unlocks cheat mode. The indicator is the cathedral itself: the central tent tower's tip dome turns **green** on the title screen. During play, digit keys **0-9** jump to that level immediately via the `set_level` protocol command: gravity and the locked color change at once, and progression continues from the new level (`Game.set_level`; UI tracking in `App.tsx`). Owner addition 2026-10-27: the **Home** key toggles the AI autopilot (section 4.11), and the backquote key cycles the gameplay music — both only while the cheat is active.
-- Score cap: **TBD**. Confirm from the source.
+- **Placement points** are awarded exactly once per lock, including locks that clear nothing. Use the level and drop state at landing, before any stage advance:
+  `min(d * r * (r + h), 999)` where `r = level + 1`, `d = 2` for a soft-drop landing and `1` otherwise, and `h` is the height of the piece's **lowest occupied cell**, counted from 0 on the bottom visible row. The lowest-cell mapping is the disassembly's bitmap-scan behavior (`main.asm` L8658-L8692 keeps the last occupied cell before L9A47 adds it to the level term). Source: TetrisWiki, "Tetris (NES, Tengen)".
+- **Clear awards** are single **100**, double **400**, triple **900**, tetris **2500** (`points_for_clear` in `scoring.py`). The award for each clear event is accumulated into a **pending stage award** and credited once, on stage completion. It is not paid immediately on every clear. The flat 300-point block bonus is removed. The immediate clear label **SINGLE / DOUBLE / TRIPLE / TETRIS** still appears while the rows wipe.
+- Line-clear animation (owner decisions 2026-10-24, reference `png/screenshot_11.png`): completed rows stay visible and are wiped **from the center to both sides** — one column-pair every 4 frames (pairs {4,5}, {3,6}, {2,7}, {1,8}, {0,9}; `WIPE_FRAMES_PER_PAIR` in `theme.ts`) — then the rows are removed and the next piece spawns after `CLEAR_ANIM_FRAMES` (24). The core drives the timing and reports `clearing: {rows, frame}` in the state event; the UI only renders the wipe and the label.
+- **Level curve and stage boundaries** (Tengen manual p. 9; TetrisWiki): stages are 30 lines for levels 0-4, then 50 lines for level 5 and above. The displayed level caps at 17. Stage boundaries are tracked independently of the displayed level, so 800, 850, ... still end stages and pay the pending award after the cap. For a normal game starting at 0: 30, 60, 90, 120, 150, 200, 250, ..., 750, 800, 850. A clear that overshoots a boundary completes exactly one stage if only one threshold is crossed (for example, a triple from 149 to 152 completes the level-4 stage and leaves the next boundary at 200).
+- Cheat (owner request 2026-10-25): typing the classic Konami sequence on the title screen — **↑ ↑ ↓ ↓ ← → ← → B A**, physical keys — unlocks cheat mode. The indicator is the cathedral itself: the central tent tower's tip dome turns **green** on the title screen. During play, digit keys **0-9** jump to that level immediately via the `set_level` protocol command: gravity and the locked color change at once. The jump anchors at the start of the current stage, preserving progress inside it; selecting level 5 at line 30 must keep level 5 on line 31. Owner addition 2026-10-27: the **Home** key toggles the AI autopilot (section 4.11), and the backquote key cycles the gameplay music — both only while the cheat is active.
+- Score cap: the placement formula caps at 999 per lock; there is no separate total-score cap in the implementation. **VERIFY** whether the cartridge has a total cap.
 
 ### 4.6 Piece generator (RNG)
 
@@ -445,8 +455,10 @@ Keep the key map as a single table in `app/src/controls.ts`.
 
 ## 8. Error handling
 
-- If the Python process fails to start, the UI shows the error and a Retry button.
-- If Python exits during play, the Rust core restarts it. The in-progress game is lost, and the UI shows "Game reset."
+- A child is **Starting** after the OS spawn succeeds. It becomes **Running** only when the first valid game-state snapshot is cached; a log line or command response is not readiness.
+- If stdout closes before that first snapshot, the shell reaps the child, caches a readable startup error, emits the error event, releases the supervisor guard, and stops automatic restarts. The UI shows Retry. A manual Retry starts exactly one fresh child, clears the old error, and waits for its first state.
+- If a previously ready child exits during play, the Rust core restarts it automatically. The in-progress game is lost, and the UI shows "Game reset."
+- If the Python process fails to spawn outright, the UI shows the error and a Retry button.
 - Invalid commands never crash the game. They return an error response and are logged to stderr.
 - A corrupted high score file is renamed to `highscore.json.bak`, and play starts from 0.
 
@@ -459,10 +471,10 @@ Python (pytest), required before UI work starts:
 - **Board:** collision, line clear of 1 to 4 lines, no false clears.
 - **Pieces:** all seven shapes and all rotation states, checked against the Tengen table.
 - **Rotation:** the top-left anchoring rule, the vertical I exception, the one-square left wall kick, and rejected rotations.
-- **Gravity:** the speed table at representative levels, and the soft drop acceleration curve once verified.
-- **Scoring:** the 30-line bonus rule, once verified.
+- **Gravity:** the Tengen table at representative levels, the fractional 5.5/3.75/3.25 intervals, quarter-frame accumulation, speed-change backlog prevention, and the soft-drop curve.
+- **Scoring:** placement points and the 999 cap, clear awards accumulating into the pending stage award, stage payouts at 30/50-line boundaries, threshold overshoot, the level cap at 17, and the cheat-jump boundary.
 - **RNG:** determinism with a fixed seed, and the repeat behavior over a long sample.
-- **Game flow:** a scripted input sequence produces the expected board, score, and level.
+- **Game flow:** a scripted input sequence produces the expected board, score, and level. The tools runner is also tested with a pre-seeded player high-score file and must leave it byte-for-byte unchanged.
 
 Rust and UI:
 
