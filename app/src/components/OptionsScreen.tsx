@@ -17,10 +17,10 @@ import { logicalCanvas } from "./draw";
 // on the left, HANDICAP on the right — and a blinking start prompt.
 //
 // WHO OWNS THE STATE: none of it. The selection indices live in App.tsx
-// (musicSel, handicapSel, activeCol) because App also routes the keys and
-// starts the game with the chosen values; this component is a pure
-// renderer of (selection, focus). Keyboard handling and the Enter->start
-// transition are in App.tsx's keydown effect.
+// (musicSel, handicapSel, activeCol) because App starts the game with the
+// chosen values; this component is a pure renderer of (selection, focus).
+// Keyboard handling is in hooks/useGameKeyboard.ts, and the Enter->start
+// transition is in App.tsx's pressStart.
 //
 // LOCAL COPIES OF THE APP'S CONSTANTS: MUSIC_MENU and HANDICAP_LEVELS are
 // duplicated here (App.tsx has the same arrays) so the display labels stay

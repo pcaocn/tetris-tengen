@@ -7,7 +7,7 @@ import {
   LAYOUT,
   type BlockTrio,
 } from "../theme";
-import type { GameState } from "../hooks/useGameState";
+import type { GameState } from "../types/game";
 import { drawBlock, logicalCanvas } from "./draw";
 
 // ============================================================

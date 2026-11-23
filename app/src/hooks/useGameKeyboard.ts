@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { gameApi } from "../api/game";
 import { KEY_MAP } from "../controls";
-import type { GameState } from "./useGameState";
+import type { GameState } from "../types/game";
 
 // Konami cheat (owner request 2026-10-25): typing this key sequence on
 // the title screen unlocks cheat mode; digits 0-9 then jump the level
@@ -117,7 +117,7 @@ export function useGameKeyboard({
         const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code);
         if (digit) {
           e.preventDefault();
-          invoke("set_level", { level: Number(digit[1]) }).catch(() => {});
+          gameApi.setLevel(Number(digit[1])).catch(() => {});
           return;
         }
         if (e.code === "Backquote") {
@@ -125,20 +125,20 @@ export function useGameKeyboard({
           const current = stateRef.current?.music_track ?? musicCycle[0];
           const idx = musicCycle.indexOf(current);
           const next = musicCycle[(idx + 1) % musicCycle.length];
-          invoke("set_music", { music: next }).catch(() => {});
+          gameApi.setMusic(next).catch(() => {});
           return;
         }
         if (e.code === "Home") {
           e.preventDefault();
           const next =
             stateRef.current?.autopilot === "highscore" ? null : "highscore";
-          invoke("set_autopilot", { mode: next }).catch(() => {});
+          gameApi.setAutopilot(next).catch(() => {});
           return;
         }
         if (e.code === "End") {
           e.preventDefault();
           const next = stateRef.current?.autopilot === "quick" ? null : "quick";
-          invoke("set_autopilot", { mode: next }).catch(() => {});
+          gameApi.setAutopilot(next).catch(() => {});
           return;
         }
       }

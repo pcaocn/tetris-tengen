@@ -7,70 +7,15 @@
 //     forwards the Python core's JSON snapshots; each one fully replaces
 //     the previous state. There is no accumulation, no merging: the core
 //     owns the truth, the UI just holds the latest snapshot.
-//   OUTBOUND (`invoke` calls) -- UI commands ("get_state", "start_core")
-//     sent to the Rust shell, which translates them to JSON lines on the
-//     core's stdin. (Game inputs go through App.tsx's send_input instead.)
+//   OUTBOUND (gameApi calls) -- typed wrappers around the Rust commands
+//     for "get_state", "start_core", and cached startup status.
 //
-// This is also where the GameState type lives — the shape of everything
-// the UI is allowed to know. If a field is not on it, the UI cannot use
-// it, which is what keeps rule computation out of the front end.
+// The snapshot shape lives in `types/game.ts`; this hook only subscribes,
+// reconciles startup, and exposes the latest state.
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-
-// One state snapshot from the Python core (spec 2.2). The UI renders from
-// this state only and never computes game rules (spec 2.4).
-//
-// Field notes for the non-obvious ones:
-//   frame        -- the core's 60 Hz tick counter (monotonic; useful to
-//                   spot stale snapshots when debugging).
-//   board        -- 20 rows x 10 cols of ints, 0 = empty, > 0 = filled.
-//                   No hidden rows are sent: the core pre-clips them.
-//   current      -- the falling piece's kind letter and its 4 cells, or
-//                   null between lock and next spawn.
-//   clearing     -- the line-clear animation: which rows and how far the
-//                   core's 24-frame dissolve has progressed.
-//   lock_count / clear_count -- monotonic event counters. The UI diffs
-//                   them to fire sound effects (App.tsx); counters rather
-//                   than events because state snapshots can be coalesced
-//                   in transit and a one-shot event channel would drop.
-//   top_run      -- this game-over made the top-5 (drives the fireworks).
-//   color_index  -- which locked-color row of the theme table to use.
-export interface GameState {
-  type: "state";
-  frame: number;
-  board: number[][];
-  current: { kind: string; cells: [number, number][] } | null;
-  clearing: { rows: number[]; frame: number } | null;
-  next: string;
-  score: number;
-  lines: number;
-  level: number;
-  high_score: number;
-  stats: Record<string, number>;
-  status: "playing" | "paused" | "level_complete" | "game_over";
-  lock_count: number;
-  clear_count: number;
-  top_scores: { score: number; at: string }[];
-  top_run: boolean;
-  autopilot: "quick" | "highscore" | null;
-  music_track: string | null;
-  music_phase: "gameplay" | "level_complete" | "milestone" | "game_over";
-  color_index: number;
-}
-
-export type GameStatus = GameState["status"];
-
-/**
- * The shell's cached answer for a UI that subscribed after startup.
- * `status` is the child-process phase, not the game status; `state` is the
- * newest snapshot (if any), and `error` is set only after a fatal spawn.
- */
-export interface CoreStatusSnapshot {
-  status: "starting" | "running" | "error";
-  error: string | null;
-  state: GameState | null;
-}
+import { gameApi } from "../api/game";
+import type { CoreStatusSnapshot, GameState } from "../types/game";
 
 /**
  * Subscribes to the core's state stream for the lifetime of the app.
@@ -141,8 +86,9 @@ export function useGameState() {
         // recovers an early spawn failure: the `core-error` event may
         // have fired before this effect subscribed, so listening alone
         // can never see it.
-        invoke<CoreStatusSnapshot>("get_core_status")
-          .then((snapshot) => {
+        gameApi
+          .getCoreStatus()
+          .then((snapshot: CoreStatusSnapshot) => {
             if (!alive) return;
             if (snapshot.state && stateVersion === liveVersion) {
               setState(snapshot.state);
@@ -159,7 +105,7 @@ export function useGameState() {
           .catch(() => {});
         // Also ask for a fresh state; harmless if the core is not up yet,
         // the first state event will still arrive once it starts.
-        invoke("get_state").catch(() => {});
+        gameApi.getState().catch(() => {});
       })
       .catch(() => {
         if (alive) setError("Python core failed to start.");
@@ -178,7 +124,7 @@ export function useGameState() {
     // Clear first so the button can be pressed again even if the start
     // fails anew (the core-error event will re-set it).
     setError(null);
-    invoke("start_core").catch((e) => setError(String(e)));
+    gameApi.startCore().catch((e) => setError(String(e)));
   };
 
   return { state, notice, error, retry };

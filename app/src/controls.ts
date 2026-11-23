@@ -2,8 +2,9 @@
 // WHAT THIS FILE DOES
 // ============================================================
 // The single, complete table of keyboard bindings: browser `KeyboardEvent.code`
-// -> protocol action name. App.tsx consults it on every keydown/keyup; this
-// file holds nothing else, so the entire control scheme lives in one place.
+// -> protocol action name. useGameKeyboard consults it on every
+// keydown/keyup; this file holds nothing else, so the entire control
+// scheme lives in one place.
 //
 // WHY A TABLE INSTEAD OF A SWITCH
 // -------------------------------
@@ -15,7 +16,8 @@
 //
 // WHY `up` EXISTS AT ALL
 // ----------------------
-// Browser auto-repeat is ignored (App.tsx drops `e.repeat` events) because
+// Browser auto-repeat is ignored (useGameKeyboard drops `e.repeat` events)
+// because
 // the NES-style feel comes from Python's DAS: the core counts frames itself
 // after seeing `left`/`right`, and it cannot know a key is held unless it is
 // also told when it is released. Hence the paired `*_off` actions on keyup --
@@ -39,7 +41,8 @@ export interface KeyBinding {
 
 // The map itself. Keyed by `event.code` (physical key), NOT `event.key`:
 // code is layout-independent, so Z/X stay in place on AZERTY/QWERTZ and the
-// arrows always work. Only Enter is special-cased by App.tsx — its value
+// arrows always work. Only Enter is special-cased by useGameKeyboard — its
+// value
 // "start" is intercepted there and routed to the Start/Pause logic instead
 // of being sent to the core as-is (spec section 5, 7).
 export const KEY_MAP: Record<string, KeyBinding> = {
@@ -53,7 +56,7 @@ export const KEY_MAP: Record<string, KeyBinding> = {
   // Rotations are momentary taps — no release event needed, so no `up`.
   KeyZ: { down: "rotate_ccw" },
   KeyX: { down: "rotate_cw" },
-  // Handled locally by App.tsx (title -> options -> game, pause/restart);
+  // Handled locally by useGameKeyboard (title -> options -> game, pause/restart);
   // never forwarded to the core on the pre-game screens.
   Enter: { down: "start" },
 };

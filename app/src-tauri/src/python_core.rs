@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 /// Startup state of the Python child, mirrored for a UI that subscribes
 /// after the shell has already tried to launch it.
@@ -53,8 +53,6 @@ struct Inner {
     latest_state: Option<Value>,
     startup_status: CoreStartupStatus,
     startup_error: Option<String>,
-    python: Option<PathBuf>,
-    core_dir: Option<PathBuf>,
 }
 
 impl PythonCore {
@@ -67,8 +65,6 @@ impl PythonCore {
                 latest_state: None,
                 startup_status: CoreStartupStatus::Starting,
                 startup_error: None,
-                python: None,
-                core_dir: None,
             }),
             next_id: AtomicU64::new(1),
             supervising: AtomicBool::new(false),
@@ -76,11 +72,15 @@ impl PythonCore {
         }
     }
 
-    /// Spawn (or re-spawn) the Python process. Resolution order (spec
-    /// 2.3, section 13): env overrides; the repository checkout this
-    /// binary was built from; the bundled core source in the app
-    /// resources with the system python3.
-    fn spawn(&self, app: &AppHandle) -> Result<(), String> {
+    /// Spawn (or re-spawn) the game engine.
+    ///
+    /// Resolution order:
+    ///   1. `TETRIS_PYTHON` / `TETRIS_CORE_DIR` developer overrides.
+    ///   2. Release builds: the `tetris-core` sidecar next to the app
+    ///      executable (staged by `tools/build_sidecar.sh` and declared
+    ///      in `bundle.externalBin`).
+    ///   3. Debug builds: the checkout's `.venv` and `core/` directory.
+    fn spawn(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|_| "core lock poisoned")?;
         if let Some(mut child) = inner.child.take() {
             let _ = child.kill();
@@ -91,16 +91,14 @@ impl PythonCore {
         inner.latest_state = None;
         inner.startup_status = CoreStartupStatus::Starting;
         inner.startup_error = None;
-        let (python, core_dir) = resolve_paths(app, &mut inner);
-        let mut child = Command::new(&python)
-            .arg("-m")
-            .arg("tetris_core")
-            .current_dir(&core_dir)
+        let mut command = resolve_launch()?;
+        let program = command.get_program().to_string_lossy().to_string();
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| format!("failed to start {}: {e}", python.display()))?;
+            .map_err(|e| format!("failed to start {program}: {e}"))?;
         inner.stdin = Some(child.stdin.take().ok_or("python stdin unavailable")?);
         inner.stdout = Some(child.stdout.take().ok_or("python stdout unavailable")?);
         inner.child = Some(child);
@@ -226,48 +224,61 @@ impl Drop for PythonCore {
     }
 }
 
-/// Work out which Python interpreter to run and which directory to run
-/// it in. Returns (interpreter path, core directory).
-fn resolve_paths(app: &AppHandle, inner: &mut Inner) -> (PathBuf, PathBuf) {
-    if let (Some(p), Some(d)) = (inner.python.clone(), inner.core_dir.clone()) {
-        return (p, d);
-    }
-    let repo_core = std::env::var("TETRIS_CORE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../core"));
-    let bundled = app
-        .path()
-        .resource_dir()
-        .ok()
-        .filter(|r| r.join("tetris_core").exists());
-    let venv_python = repo_core.join(".venv/bin/python");
-    let core_dir = if repo_core.join("tetris_core").exists() {
-        repo_core
-    } else if let Some(b) = bundled {
-        b
-    } else {
-        repo_core
-    };
-    let python = match std::env::var("TETRIS_PYTHON") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            if venv_python.exists() {
-                venv_python
+/// Work out how to launch the engine for this build.
+fn resolve_launch() -> Result<Command, String> {
+    // Developer overrides always win, in both debug and release.
+    let python_override = std::env::var("TETRIS_PYTHON").ok().map(PathBuf::from);
+    let core_override = std::env::var("TETRIS_CORE_DIR").ok().map(PathBuf::from);
+    if python_override.is_some() || core_override.is_some() {
+        let repo_core = core_override
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../core"));
+        let python = python_override.unwrap_or_else(|| {
+            let venv = repo_core.join(".venv/bin/python");
+            if venv.exists() {
+                venv
             } else {
                 PathBuf::from("/usr/bin/python3")
             }
+        });
+        let mut command = Command::new(python);
+        command.arg("-m").arg("tetris_core").current_dir(repo_core);
+        return Ok(command);
+    }
+
+    // Release builds use the bundled sidecar. It is copied next to the
+    // app executable by the Tauri bundler (bundle.externalBin).
+    if !cfg!(debug_assertions) {
+        let sidecar = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("tetris-core")))
+            .ok_or_else(|| "cannot locate the tetris-core sidecar".to_string())?;
+        if !sidecar.exists() {
+            return Err(format!(
+                "packaged sidecar not found at {}; run tools/build_sidecar.sh",
+                sidecar.display()
+            ));
         }
+        return Ok(Command::new(sidecar));
+    }
+
+    // Debug builds run the checkout's virtual environment.
+    let repo_core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../core");
+    let venv = repo_core.join(".venv/bin/python");
+    let python = if venv.exists() {
+        venv
+    } else {
+        PathBuf::from("/usr/bin/python3")
     };
-    inner.python = Some(python.clone());
-    inner.core_dir = Some(core_dir.clone());
-    (python, core_dir)
+    let mut command = Command::new(python);
+    command.arg("-m").arg("tetris_core").current_dir(repo_core);
+    Ok(command)
 }
 
 /// The supervisor thread: keep the Python process alive.
 fn supervise(app: AppHandle, core: Arc<PythonCore>) {
     loop {
         core.set_startup_status(CoreStartupStatus::Starting, None);
-        if let Err(message) = core.spawn(&app) {
+        if let Err(message) = core.spawn() {
             core.set_startup_status(CoreStartupStatus::Error, Some(message.clone()));
             core.supervising.store(false, Ordering::Relaxed);
             let _ = app.emit(

@@ -7,9 +7,10 @@
 //
 // The layering of the app, top to bottom:
 //   main.tsx        -- mounts React into the single #root div.
-//   App.tsx         -- owns the window, the keyboard, and the audio.
-//   useGameState    -- the single channel to the game: Tauri events in,
-//                      `invoke` calls out. The UI never computes rules.
+//   App.tsx         -- owns screen/menu state, layout, and hook wiring.
+//   hooks/          -- useGameState (core snapshots/startup), useGameAudio
+//                      (music/SFX lifecycle), useGameKeyboard (input).
+//   api/game.ts     -- typed wrappers around the Rust commands.
 //   components/*    -- pure renderers of the state snapshot (plus the
 //                      canvas vector art in Board/draw/cathedral).
 // Everything below App is dumb on purpose: the Python core is the
@@ -20,7 +21,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
-// React 18 function components only; no global state library in v1
+// React function components only; no global state library in v1
 // (spec section 11, 12).
 //
 // `<React.StrictMode>` matters for how you should read the effects in

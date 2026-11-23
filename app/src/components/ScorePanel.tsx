@@ -1,5 +1,5 @@
 import { FONT_SMOOTH, LAYOUT, PANEL_BG, TEXT_BRIGHT, TEXT_COLOR } from "../theme";
-import type { GameState } from "../hooks/useGameState";
+import type { GameState } from "../types/game";
 
 // ============================================================
 // WHAT THIS COMPONENT DOES

@@ -12,7 +12,7 @@ import {
   planSfx,
   type SfxContextState,
 } from "../sfxPlan";
-import type { GameState } from "./useGameState";
+import type { GameState } from "../types/game";
 
 // Music (owner request 2026-10-25). The title screen previews the four
 // gameplay themes (02-05); the choice is sent with new_game. The core
@@ -23,25 +23,25 @@ import type { GameState } from "./useGameState";
 //   "game_over"      -> 08, once.
 // The cue plays over the paused theme; the theme keeps its source and
 // position, so a celebration never costs a reload.
-import introUrl from "../../../music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg?url";
-import loginskaUrl from "../../../music/02_-_Tetris_Tengen_-_NES_-_Loginska.ogg?url";
-import bradinskyUrl from "../../../music/03_-_Tetris_Tengen_-_NES_-_Bradinsky.ogg?url";
-import kalinkaUrl from "../../../music/04_-_Tetris_Tengen_-_NES_-_Kalinka.ogg?url";
-import troikaUrl from "../../../music/05_-_Tetris_Tengen_-_NES_-_Troika.ogg?url";
-import endOfStageUrl from "../../../music/06_-_Tetris_Tengen_-_NES_-_End_of_Stage.ogg?url";
-import gameOverMusicUrl from "../../../music/08_-_Tetris_Tengen_-_NES_-_Game_Over.ogg?url";
-import victoryUrl from "../../../music/09_-_Tetris_Tengen_-_NES_-_Victory.ogg?url";
+import introUrl from "../assets/audio/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg?url";
+import loginskaUrl from "../assets/audio/02_-_Tetris_Tengen_-_NES_-_Loginska.ogg?url";
+import bradinskyUrl from "../assets/audio/03_-_Tetris_Tengen_-_NES_-_Bradinsky.ogg?url";
+import kalinkaUrl from "../assets/audio/04_-_Tetris_Tengen_-_NES_-_Kalinka.ogg?url";
+import troikaUrl from "../assets/audio/05_-_Tetris_Tengen_-_NES_-_Troika.ogg?url";
+import endOfStageUrl from "../assets/audio/06_-_Tetris_Tengen_-_NES_-_End_of_Stage.ogg?url";
+import gameOverMusicUrl from "../assets/audio/08_-_Tetris_Tengen_-_NES_-_Game_Over.ogg?url";
+import victoryUrl from "../assets/audio/09_-_Tetris_Tengen_-_NES_-_Victory.ogg?url";
 // Sound effects (owner request 2026-10-25): the exact original drop,
 // line-clear, and menu-select sounds, plus the game-over firework
-// rockets, from the owner's files in music/.
-import blockDropUrl from "../../../music/tetris_block_drop.mp3?url";
-import lineClearUrl from "../../../music/tetris_line_clear.mp3?url";
-import select1Url from "../../../music/tetris_select1.mp3?url";
-import select2Url from "../../../music/tetris_select2.mp3?url";
-import firework1Url from "../../../music/tetris_firework1.mp3?url";
-import firework2Url from "../../../music/tetris_firework2.mp3?url";
-import firework3Url from "../../../music/tetris_firework3.mp3?url";
-import firework4Url from "../../../music/tetris_firework4.mp3?url";
+// rockets, from the owner's files in assets/audio/.
+import blockDropUrl from "../assets/audio/tetris_block_drop.mp3?url";
+import lineClearUrl from "../assets/audio/tetris_line_clear.mp3?url";
+import select1Url from "../assets/audio/tetris_select1.mp3?url";
+import select2Url from "../assets/audio/tetris_select2.mp3?url";
+import firework1Url from "../assets/audio/tetris_firework1.mp3?url";
+import firework2Url from "../assets/audio/tetris_firework2.mp3?url";
+import firework3Url from "../assets/audio/tetris_firework3.mp3?url";
+import firework4Url from "../assets/audio/tetris_firework4.mp3?url";
 
 const SFX_URLS: Record<string, string> = {
   drop: blockDropUrl,

@@ -10,12 +10,12 @@
 // --------------------------
 //   Python core --(JSON on stdout)--> Rust shell --(Tauri "game-state")
 //     --> useGameState --> `state` HERE --> <Board/>, <ScorePanel/>, ...
-//   Keyboard hook --(invoke "send_input" / "new_game" / ...)-->
+//   Keyboard hook --(gameApi "send_input" / "new_game" / ...)-->
 //     Rust shell --(JSON on stdin)--> Python core.
-// The UI's only outputs are those invoke calls and these draw
+// The UI's only outputs are those gameApi commands and these draw
 // decisions. No rule of Tetris is computed in this file.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { gameApi } from "./api/game";
 import {
   BACKGROUND,
   FONT_SMOOTH,
@@ -114,7 +114,7 @@ export default function App() {
    * input is lost (no toast, no retry — the next input supersedes it).
    */
   const send = useCallback((action: string) => {
-    invoke("send_input", { action }).catch(() => {});
+    gameApi.sendInput(action).catch(() => {});
   }, []);
 
   /**
@@ -137,23 +137,27 @@ export default function App() {
       }
       hasStartedRef.current = true;
       setStarted(true);
-      invoke("new_game", {
-        level: 0,
-        music: MUSIC_IDS[musicSelRef.current],
-        handicap: HANDICAP_LEVELS[handicapSelRef.current],
-      }).catch(() => {});
+      gameApi
+        .newGame({
+          level: 0,
+          music: MUSIC_IDS[musicSelRef.current],
+          handicap: HANDICAP_LEVELS[handicapSelRef.current],
+        })
+        .catch(() => {});
       return;
     }
     if (!current || current.status === "game_over") {
       // Restart path — same parameters as the first start, so the chosen
       // music and handicap survive across games.
-      invoke("new_game", {
-        level: 0,
-        music: MUSIC_IDS[musicSelRef.current],
-        handicap: HANDICAP_LEVELS[handicapSelRef.current],
-      }).catch(() => {});
+      gameApi
+        .newGame({
+          level: 0,
+          music: MUSIC_IDS[musicSelRef.current],
+          handicap: HANDICAP_LEVELS[handicapSelRef.current],
+        })
+        .catch(() => {});
     } else {
-      invoke("pause").catch(() => {});
+      gameApi.pause().catch(() => {});
     }
   }, [error]);
 

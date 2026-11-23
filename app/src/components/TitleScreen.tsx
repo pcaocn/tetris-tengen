@@ -18,8 +18,9 @@ import { logicalCanvas } from "./draw";
 // The title screen (spec 5): gold bands with green diamond studs, the
 // full-screen double frame, the cathedral vector scene, the red italic
 // TETRIS wordmark, and the blinking PRESS ENTER prompt. It is a pure
-// function of (scale, cheat) — no state, no listeners; the keyboard that
-// drives it (Enter -> options, the Konami sequence) lives in App.tsx.
+// // function of (scale, cheat) — no state, no listeners; the keyboard that
+// drives it (Enter -> options, the Konami sequence) lives in
+// hooks/useGameKeyboard.ts.
 //
 // The scene art is one canvas; everything else is styled divs. The bands
 // and frame are rectangles, so DOM is simpler than canvas paths there.

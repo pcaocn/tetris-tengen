@@ -11,7 +11,7 @@ import {
   STATS_TICK_EVERY,
   TEXT_BRIGHT,
 } from "../theme";
-import type { GameState } from "../hooks/useGameState";
+import type { GameState } from "../types/game";
 import { drawBlock, logicalCanvas } from "./draw";
 
 const KINDS: readonly string[] = STATS_ORDER;

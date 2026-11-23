@@ -98,8 +98,8 @@ def block(light, mid, dark):
 def main():
     """Composite the 2x2 block grid on a black field and save the PNG.
 
-    Writes assets/icon-source.png relative to the CWD -- run from the
-    repo root. Then `npx tauri icon` derives every platform size.
+    Writes tools/icon-source.png relative to the repo root. Then
+    `npx tauri icon` derives every platform size.
     """
     icon = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 255))
     margin = (SIZE - 2 * CELL - GAP) // 2
@@ -118,8 +118,8 @@ def main():
     ]
     for img, pos in zip(blocks, positions):
         icon.alpha_composite(img, pos)
-    icon.save("assets/icon-source.png")
-    print("wrote assets/icon-source.png")
+    icon.save("tools/icon-source.png")
+    print("wrote tools/icon-source.png")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import { FONT_SMOOTH, LAYOUT, OVERLAY_DIM, TEXT_COLOR } from "../theme";
-import type { GameStatus } from "../hooks/useGameState";
+import type { GameStatus } from "../types/game";
 import { TitleScreen } from "./TitleScreen";
 import { OptionsScreen } from "./OptionsScreen";
 

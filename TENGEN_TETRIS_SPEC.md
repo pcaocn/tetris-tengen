@@ -139,20 +139,24 @@ tengen-tetris/
       src/main.rs            # executable entry point
       src/lib.rs             # Tauri setup, commands, and registration
       src/python_core.rs     # Python child process and protocol transport
+      binaries/              # staged tetris-core-<target-triple> sidecars
     src/                     # React UI (TypeScript, Vite)
       main.tsx
       App.tsx                # screen flow and wiring
+      api/game.ts            # typed wrappers around the Rust commands
+      types/game.ts          # shared snapshot and startup types
       components/            # Board, NextPreview, ScorePanel, StatsPanel, Overlay,
                              # OptionsScreen, TitleScreen, cathedral.ts, draw.ts
       hooks/                 # useGameState, useGameAudio, useGameKeyboard
+      assets/audio/          # Vite-imported music and sound effects
       theme.ts               # logical resolution, palette, layout metrics
       controls.ts            # the keyboard binding table
       audioPlan.ts           # music-track state machine
       sfxPlan.ts             # sound-effect / AudioContext policy
+    public/                  # files served by URL (open-licensed font)
     scripts/                 # front-end tests (music state machine, SFX plan)
-  assets/
-    font/                    # open-licensed pixel font (section 6.3)
-  tools/                     # pixel-analysis scripts for the reference captures
+  docs/autopilot.md          # headless autopilot tuning guide
+  tools/                     # sidecar build, icon, and pixel-analysis scripts
   stats/                     # saved benchmark CSVs and per-run results
 ```
 
@@ -348,7 +352,7 @@ The "highscore" profile therefore **blends its weights** toward a set of *danger
 
 The autopilot strategies are tuned with a headless sweep, and the rules below are what make the numbers trustworthy:
 
-- **Headless benchmark scripts.** `core/simulate_autopilot.py` (distribution over a seed set, one strategy) and `core/sweep_autopilot.py` (variant comparison under one frame budget). `core/analyze_frontier.py` performs the paired statistical test; `core/compare_autopilot.py` prints a plain side-by-side table. All of them run the real `Game` and the real autopilot code — only the 60 Hz sleep between frames is removed, so a headless score is a score the app could really produce. The commands are documented in the README section "Autopilot sweep".
+- **Headless benchmark scripts.** `core/simulate_autopilot.py` (distribution over a seed set, one strategy) and `core/sweep_autopilot.py` (variant comparison under one frame budget). `core/analyze_frontier.py` performs the paired statistical test; `core/compare_autopilot.py` prints a plain side-by-side table. All of them run the real `Game` and the real autopilot code — only the 60 Hz sleep between frames is removed, so a headless score is a score the app could really produce. The commands are documented in [`docs/autopilot.md`](docs/autopilot.md).
 - **The same seeds for every variant.** Every sweep variant plays an identical seed list, so variant-to-variant comparison is **paired** — McNemar's exact test on the discordant seeds plus a paired bootstrap CI on the score deltas. Comparing two independent death rates is misleading: on 400 seeds, differences of 4–6 deaths sit at the noise floor, and one earlier apparent 6-death improvement tested at p = 0.36. Re-measured the paired way, the board-fullness change is **not** a trade of score for survival — it delivers both: 33/400 vs 78/400 early deaths (McNemar p < 0.0001, b/c = 69/24) *and* a mean score up 27,432 (95% CI [+9,944, +46,468]). The 400-seed figures above were measured with `--master-seed 77777`; a sweep on the default master seed (11111) draws a different seed list and is a different — equally valid, but not comparable — sample, so the master seed is quoted alongside every published number.
 - **Candidate seeds must not be drawn from the set where the current profile dies.** That screen is biased, and an earlier round built on it was a mirage.
 - **Never judge on one seed.** A single run is luck; use ≥ 400 seeds and the paired test before believing any change.
@@ -374,14 +378,14 @@ All three default to the behaviour of the validated profile, so the shipped stra
 - **Start / title screen** (owner request 2026-10-24, refined 2026-10-25): the composition follows `png/screenshot_00.png` — gold border bands with green diamond studs top and bottom, a full-screen light-blue double frame, a red italic `TETRIS` wordmark, the Saint Basil's Cathedral scene (adapted from the owner's reference render `png/Saint_Basil's_Cathedral_render.ts`: pale sky with sun, stone platform, terracotta walls with white arcade, onion domes with Orthodox crosses, central tent tower with gold lattice — `cathedral.ts`), and a blinking `PRESS ENTER` with the introduction theme (01) looping. No menus on the title (owner decision 2026-10-25).
 - **Options page** (owner request 2026-10-25, refined the same day): reached from the title with Enter, with the cathedral drawn dimmed as the background and no background music. The left column lists the gameplay music — **Silent (first, default)**, Loginska (02), Bradinsky (03), Kalinka (04), Troika (05) — each previewed as the selection lands on it; the right column lists the handicap levels **0, 3, 6, 9, 12** as a full menu. Up/Down move within the focused column, Left/Right switch focus, Enter starts the game with the selections (`new_game` carries the track id and handicap; the state event reports `music_track` and `music_phase`). Pausing the game also pauses the music; it resumes in place on unpause. The cheat sequence's arrow presses net out to no menu movement on this page.
 - **Pause:** freezes the frame loop and shows PAUSE over the playfield.
-- **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again. Owner addition 2026-10-25: if the run's score enters the **top 5**, the game-over screen instead shows the top-5 records (rank, date/time, score) and plays the four firework rockets (`music/tetris_firework1..4.mp3`) in a loop until Enter restarts.
-- **Title music** (owner request 2026-10-25): `music/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg` loops on the intro/title page only. Owner correction 2026-10-27 (matching the original game): Introduction is not selectable on the options page and is not part of the gameplay loop. The owner supplies and tracks the music files by decision (spec 1 non-goals cover artwork, not the owner's own music files).
+- **Game over:** shows GAME OVER over the playfield with the final score. Press Start to play again. Owner addition 2026-10-25: if the run's score enters the **top 5**, the game-over screen instead shows the top-5 records (rank, date/time, score) and plays the four firework rockets (`app/src/assets/audio/tetris_firework1..4.mp3`) in a loop until Enter restarts.
+- **Title music** (owner request 2026-10-25): `app/src/assets/audio/01_-_Tetris_Tengen_-_NES_-_Introduction.ogg` loops on the intro/title page only. Owner correction 2026-10-27 (matching the original game): Introduction is not selectable on the options page and is not part of the gameplay loop. The owner supplies and tracks the music files by decision (spec 1 non-goals cover artwork, not the owner's own music files).
 - **End-of-stage celebration** (owner request 2026-10-25, changed by the owner 2026-10-29): clearing a 30-line block freezes the game in the new `level_complete` status — 06 (End of Stage) plays **once** and then **the next level starts by itself**; there is no Katyusha (07) chain and no wait for Enter (Enter still skips ahead for the impatient). The celebration window is 210 frames (3.5 s), long enough for 06 (2.48 s) or 09 (3.24 s) to play once. Clearing level 9/19/29... (the new level is a multiple of 10) plays 09 (Victory) instead (`music_phase: "milestone"`). Game over plays 08 once (`music_phase: "game_over"`).
 - **Audio playback** (owner request 2026-10-29, after "the music sometime got interrupted and be silent for 1 second, sometime this happen very often ... later in the game, sound of 'clear line' and 'block drop' are complete gone"): the music is driven by a state machine (`app/src/audioPlan.ts`, pure and unit-tested in `app/scripts/audio-plan.test.ts`) that never reloads a track it already holds — assigning a new `src` makes the browser load and decode the whole file (up to 2.9 MB) again, which was the second of silence. Concretely: the theme element keeps its source and position across a celebration (only the cue element plays over it), the gameplay playlist hands over by swapping two elements — the next track is preloaded in the spare one — and the sound effects release their `GainNode`/`AudioBufferSourceNode` when they end and rebuild an `AudioContext` that the browser left *interrupted* (WebKit's spelling of *suspended*), which is what killed the block-drop and line-clear sounds later in a game.
 - **Cheat music change** (owner request 2026-10-25): with the Konami cheat active, the backquote key cycles the gameplay music mid-game (Loginska → Bradinsky → Kalinka → Troika) via the `set_music` protocol command; normally the music is fixed during play.
 - **Gameplay playlist** (owner request 2026-10-25): when a theme (not Silent) is selected, gameplay starts with the selected theme and then loops through the four gameplay themes in order; each track advances on its own `ended` event. Owner correction 2026-10-27: after an end-of-stage celebration, the playlist continues with the theme that was playing right before the level ended, at its position — it does not restart from the selection. New games and the cheat music change still start fresh; Silent stays silent. Owner addition 2026-10-29: the advance is seamless — the next track is preloaded in a second element and the two swap, so the music never falls silent between tracks.
-- **Landing pop & row-clear sound** (owner request 2026-10-25): every piece lock bumps `lock_count` and every clear event bumps `clear_count` in the state event; the UI plays the owner's exact original samples — `music/tetris_block_drop.mp3` and `music/tetris_line_clear.mp3` — on each increment.
-- **Menu select sounds** (owner request 2026-10-25): `music/tetris_select1.mp3` plays when a menu selection moves down, `music/tetris_select2.mp3` when it moves up (both title-screen menus on the options page).
+- **Landing pop & row-clear sound** (owner request 2026-10-25): every piece lock bumps `lock_count` and every clear event bumps `clear_count` in the state event; the UI plays the owner's exact original samples — `app/src/assets/audio/tetris_block_drop.mp3` and `app/src/assets/audio/tetris_line_clear.mp3` — on each increment.
+- **Menu select sounds** (owner request 2026-10-25): `app/src/assets/audio/tetris_select1.mp3` plays when a menu selection moves down, `app/src/assets/audio/tetris_select2.mp3` when it moves up (both title-screen menus on the options page).
 - **Handicap** (owner request 2026-10-25): the options page offers **0, 3, 6, 9, 12** unfinished rows. The chosen count of bottom rows starts filled with exactly one random hole each (`new_game` carries the handicap; `PieceRNG.hole_column` picks the gap).
 
 Exact text, positions, and timing: **TBD**, from the owner's reference captures.
@@ -422,7 +426,7 @@ Measurements (playfield offset, cell size, panel sizes): **TBD**. Capture the Te
 
 - **Background, frame, border, falling-piece colors, locked-piece colors, text:** TBD. Sample from the owner's Tengen captures. Do not invent a palette.
 - **Blocks:** draw each block as a square with a two-tone bevel: a lighter top and left edge, a darker bottom and right edge, and a one-pixel outline. Do not copy any sprite art from a capture. Changed 2026-10-24 at the owner's request: flat bevel bands read as one big pixel, so blocks are now drawn with rounded corners (radius ~12% of the cell), a thin black outline (~2%), and gradient edge shading — light top+right, dark left+bottom, each fading to transparent over ~13% of the cell (`drawBlock` in `app/src/components/draw.ts`).
-- **Text:** use an open-licensed pixel font. Recommended: Press Start 2P (open-licensed, Google Fonts). Do not extract glyphs from any capture or ROM. Changed 2026-10-24 at the owner's request: the pixel font read as low-resolution at display sizes, so the UI now uses the smooth system font stack `FONT_SMOOTH` in `theme.ts` (spec 6.4 permits this switch). The Press Start 2P file stays in `assets/font` in case the retro look is wanted later.
+- **Text:** use an open-licensed pixel font. Recommended: Press Start 2P (open-licensed, Google Fonts). Do not extract glyphs from any capture or ROM. Changed 2026-10-24 at the owner's request: the pixel font read as low-resolution at display sizes, so the UI now uses the smooth system font stack `FONT_SMOOTH` in `theme.ts` (spec 6.4 permits this switch). The Press Start 2P file stays in `app/public/font` in case the retro look is wanted later.
 
 ---
 
@@ -439,7 +443,7 @@ Measurements (playfield offset, cell size, panel sizes): **TBD**. Capture the Te
 
 ### 6.5 App icon (owner request 2026-10-25)
 
-- Four vector-style blocks in a 2×2 arrangement — red (I), blue (O), gold (J), green (S) — with the game's three-tone bevel look (light top+right, dark left+bottom, black outline) on a black field. Generated by `tools/icon.py` into `assets/icon-source.png` (1024px), and the full platform set is derived with `npx tauri icon` into `app/src-tauri/icons/` (referenced from `tauri.conf.json`).
+- Four vector-style blocks in a 2×2 arrangement — red (I), blue (O), gold (J), green (S) — with the game's three-tone bevel look (light top+right, dark left+bottom, black outline) on a black field. Generated by `tools/icon.py` into `tools/icon-source.png` (1024px), and the full platform set is derived with `npx tauri icon` into `app/src-tauri/icons/` (referenced from `tauri.conf.json`).
 
 ## 7. Keyboard controls
 
@@ -536,4 +540,4 @@ Build in this order. Don't start a milestone until the previous one passes its c
 - Soft drop acceleration: exact values, or permission to mark it TBD.
 - Level advancement and score cap for Tengen.
 - Logical resolution: confirm the default of 1024 × 960, or choose another value (section 6.4).
-- Packaging for a release build: bundled Python (for example PyInstaller, launched as a Tauri sidecar), or the system Python. Dev builds use the system Python.
+- Packaging for a release build: a PyInstaller sidecar (`tools/build_sidecar.sh`) containing the Python runtime and this release's engine, staged as `app/src-tauri/binaries/tetris-core-<target-triple>` and launched by the Rust shell. Development builds run the checkout's `.venv` with `python -m tetris_core`. `TETRIS_PYTHON` / `TETRIS_CORE_DIR` remain developer overrides.

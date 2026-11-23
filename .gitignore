@@ -7,9 +7,6 @@ __pycache__/
 app/node_modules/
 app/dist/
 app/src-tauri/target/
+app/src-tauri/binaries/tetris-core-*
 *.tsbuildinfo
-tetris-tengen-code-review.md
-tetris-tengen-implementation-brief.md
-tetris-tengen-87ee8c7-follow-up.md
-tetris-tengen-scaffold-refactor.md
-tetris-stats-display-brief.md
+code-review-*.md
