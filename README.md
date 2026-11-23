@@ -142,7 +142,8 @@ award is **SINGLE 100 · DOUBLE 400 · TRIPLE 900 · TETRIS 2500**, shown as
 a label inside the cleared rows while they wipe from the center outward.
 Clear awards are banked and paid once at stage completion. The locked-cell
 color changes with the level and repeats every 10 levels. The stats bars
-fill slowly — one bar is full at 120 pieces of a kind (roughly level 10).
+fill slowly against a shared 120-piece scale (or the current leader above
+120), and each track shows its exact comma-grouped count vertically.
 Clearing a stage (30 lines early, 50 later) freezes the game for the
 end-of-stage celebration; press **Enter** to continue to the next level.
 

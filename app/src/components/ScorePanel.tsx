@@ -24,9 +24,9 @@ export function ScorePanel({
   // zeros in its slots instead of vanishing — the readout chrome is part
   // of the screen layout and should always be there.
   const rows: Array<[string, string]> = [
-    ["SCORE", String(state?.score ?? 0)],
-    ["HIGH SCORE", String(state?.high_score ?? 0)],
-    ["LINES", String(state?.lines ?? 0)],
+    ["SCORE", (state?.score ?? 0).toLocaleString("en-US")],
+    ["HIGH SCORE", (state?.high_score ?? 0).toLocaleString("en-US")],
+    ["LINES", (state?.lines ?? 0).toLocaleString("en-US")],
     ["LEVEL", String(state?.level ?? 0)],
   ];
   return (

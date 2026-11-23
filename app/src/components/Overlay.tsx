@@ -124,7 +124,7 @@ export function Overlay({
                 turn that into "2026-10-31 21:04" — minute precision, no
                 date library needed for a five-row table. "--" covers a
                 record saved without a timestamp. */}
-            {`${i + 1}.  ${entry.at ? entry.at.replace("T", " ").slice(0, 16) : "--"}  ${entry.score}`}
+            {`${i + 1}.  ${entry.at ? entry.at.replace("T", " ").slice(0, 16) : "--"}  ${entry.score.toLocaleString("en-US")}`}
               </div>
             ))}
             <span className="blink">PRESS ENTER</span>
@@ -135,7 +135,7 @@ export function Overlay({
           <div style={text(48)}>
             GAME OVER
             <br />
-            SCORE {score}
+            SCORE {score.toLocaleString("en-US")}
             <br />
             PRESS ENTER
           </div>

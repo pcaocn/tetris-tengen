@@ -23,7 +23,7 @@ const KINDS: readonly string[] = STATS_ORDER;
 // piece kind, the piece's mini glyph at the bottom and a vertical bar
 // above it that grows with the count. The counts arrive in
 // `state.stats` (a {kind: count} record) straight from the Python core —
-// this panel only divides by STATS_BAR_MAX to size the fill.
+// this panel only chooses a shared ceiling and sizes each fill against it.
 //
 // Why a histogram and not seven numbers: it mirrors the original game's
 // stats screen and makes the RNG distribution visible at a glance — a
@@ -71,7 +71,8 @@ function MiniGlyph({ kind, cell, scale }: { kind: string; cell: number; scale: n
 // (The tick spacing/full-at value above is the original note; the shipped
 // constants are every 10 pieces, full at 120 — see STATS_TICK_EVERY /
 // STATS_BAR_MAX in theme.ts, raised 2026-10-25 so the bars fill slowly
-// across a whole game rather than maxing out by level 5.)
+// across a whole game rather than maxing out by level 5. When a count
+// passes 120 the whole panel switches to that leader as the ceiling.)
 export function StatsPanel({
   state,
   scale,
@@ -81,20 +82,23 @@ export function StatsPanel({
 }) {
   const { x, y, titleSize, cell, barWidth, barHeight, gap } = LAYOUT.stats;
   const stats = state?.stats ?? {};
-  // The tick marks: built once per render as a list of absolutely
-  // positioned hairlines, then included inside EVERY bar's track below
-  // (the same array instance is reused — they are stateless divs, so
-  // sharing is safe and React reconciles them by key).
-  // `bottom: (t / MAX) * 100%` places tick t proportionally up the track,
-  // so a tick always means "this many pieces" regardless of bar height.
+  // One shared ceiling per snapshot: the original 120-piece scale, or the
+  // current leader when it grows past 120. This keeps every bar on the
+  // same denominator and makes the leader's bar full without rescaling
+  // the others to half height.
+  const counts = KINDS.map((kind) => stats[kind] ?? 0);
+  const ceiling = Math.max(STATS_BAR_MAX, ...counts);
+  // The tick marks: 12 evenly spaced subdivisions of the current range.
+  // They are stateless divs shared by every bar track.
+  const tickCount = STATS_BAR_MAX / STATS_TICK_EVERY;
   const ticks: ReactNode[] = [];
-  for (let t = STATS_TICK_EVERY; t <= STATS_BAR_MAX; t += STATS_TICK_EVERY) {
+  for (let i = 1; i <= tickCount; i += 1) {
     ticks.push(
       <div
-        key={t}
+        key={`tick-${i}`}
         style={{
           position: "absolute",
-          bottom: `${(t / STATS_BAR_MAX) * 100}%`,
+          bottom: `${(i / tickCount) * 100}%`,
           left: 0,
           width: "100%",
           height: 2 * scale,
@@ -131,11 +135,20 @@ export function StatsPanel({
           gap: gap * scale,
         }}
       >
-        {KINDS.map((kind) => {
-          // Unknown kinds (a new piece added core-side) read as 0; a count
-          // beyond the max is clamped so the fill never exceeds 100%.
-          const count = stats[kind] ?? 0;
-          const fill = Math.min(count, STATS_BAR_MAX) / STATS_BAR_MAX;
+        {KINDS.map((kind, index) => {
+          // Unknown kinds (a new piece added core-side) read as 0. The
+          // shared ceiling is never below 120 and never below the leader.
+          const count = counts[index];
+          const fillPercent = (100 * count) / ceiling;
+          const formatted = count.toLocaleString("en-US");
+          // The label is rotated, so its horizontal thickness is the font
+          // size and its vertical extent is the text width. Fit both
+          // inside the 28 x 560 logical track; the height bound only
+          // matters for absurdly long counts.
+          const labelFontSize = Math.min(
+            barWidth * 0.78,
+            (barHeight * 0.9) / Math.max(1, formatted.length * 0.62),
+          );
           // Fixed-height glyph area under every bar so all bars align at
           // the same height regardless of piece shape (owner 2026-10-24),
           // and a fixed column width so the pitch between the bars is
@@ -175,11 +188,45 @@ export function StatsPanel({
                     left: 0,
                     bottom: 0,
                     width: "100%",
-                    height: `${fill * 100}%`,
+                    height: `${fillPercent}%`,
                     background: STATS_BAR_FILL,
                   }}
                 />
                 {ticks}
+                {/* Exact count, above the fill and grid in paint order. The
+                    SVG text runs from the bottom anchor upward: rotate -90
+                    around the anchor and start the text there, so the first
+                    digit is nearest the bottom. White with a dark stroke
+                    stays readable over both the black track and the bright
+                    fill. */}
+                <svg
+                  width={barWidth * scale}
+                  height={barHeight * scale}
+                  viewBox={`0 0 ${barWidth} ${barHeight}`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    pointerEvents: "none",
+                    overflow: "visible",
+                  }}
+                  aria-hidden="true"
+                >
+                  <text
+                    x={barWidth / 2 + labelFontSize * 0.35}
+                    y={barHeight - 4}
+                    transform={`rotate(-90 ${barWidth / 2 + labelFontSize * 0.35} ${barHeight - 4})`}
+                    textAnchor="start"
+                    fontFamily={FONT_SMOOTH}
+                    fontWeight={700}
+                    fontSize={labelFontSize}
+                    fill="#ffffff"
+                    stroke="rgba(0, 0, 0, 0.85)"
+                    strokeWidth={0.8}
+                    paintOrder="stroke fill"
+                  >
+                    {formatted}
+                  </text>
+                </svg>
               </div>
               <div style={{ height: glyphBox, display: "flex", alignItems: "flex-end" }}>
                 <MiniGlyph kind={kind} cell={cell} scale={scale} />
