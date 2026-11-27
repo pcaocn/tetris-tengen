@@ -16,29 +16,30 @@ import { logicalCanvas } from "./draw";
 // WHAT THIS COMPONENT DOES
 // ============================================================
 // The title screen (spec 5): gold bands with green diamond studs, the
-// full-screen double frame, the cathedral vector scene, the red italic
+// full-screen double frame, the cathedral canvas scene, the red italic
 // TETRIS wordmark, and the blinking PRESS ENTER prompt. It is a pure
-// // function of (scale, cheat) — no state, no listeners; the keyboard that
+// function of (scale, cheat) — no state, no listeners; the keyboard that
 // drives it (Enter -> options, the Konami sequence) lives in
 // hooks/useGameKeyboard.ts.
 //
 // The scene art is one canvas; everything else is styled divs. The bands
 // and frame are rectangles, so DOM is simpler than canvas paths there.
 const SCENE_W = 1960;
-const SCENE_H = 1476;
+const SCENE_H = 1650;
 // Scene canvas size in logical units — slightly SMALLER than the full
 // 2048x1920 screen so it slides inside the double frame with a margin;
 // TitleScreen positions it at (44, 44) inside the frame area.
 
-// The cathedral scene fills the inner frame area of the title screen,
-// adapted from the owner's reference render (png/Saint_Basil's_
-// Cathedral_render.ts), scaled to the canvas. When the cheat code has
-// been entered, the scene redraws with the central tent tower's tip dome
-// in green — the cheat indicator (owner request 2026-10-25).
+// The cathedral scene is drawn in `cathedral.ts`, with the foreground
+// monument and foliage in `cathedralForeground.ts`: a clean cover-inspired
+// central red tent with a gold cap, surrounding patterned onion domes,
+// arcaded galleries, and a shared baseline. When the cheat code has been
+// entered, only the central cap turns green — the cheat indicator
+// (owner request 2026-10-25).
 //
-// `cheat` is threaded all the way down to drawCentralTentTower, which
-// picks the dome color from it. That is why this is a prop and not CSS:
-// the recolor happens inside the vector drawing, not on a DOM node.
+// `cheat` is threaded into the canvas drawing, which is why this is a
+// prop and not CSS: the recolor happens inside the renderer, not on a DOM
+// node.
 function SceneArt({ scale, cheat }: { scale: number; cheat?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {

@@ -101,19 +101,19 @@ The first `tauri dev` compiles the Rust shell (a few minutes) and then
 opens the game window: the shell spawns the Python core as a child
 process and talks JSON lines over stdio.
 
-For a release build (bundled .app / .dmg):
+For a release build, run one command from the repository root:
 
 ```sh
-# 1. Build the standalone Python engine for the current target triple.
-#    PyInstaller is fetched by uv; the result is staged in
-#    app/src-tauri/binaries/tetris-core-<target-triple>.
-./tools/build_sidecar.sh
-
-# 2. Build the desktop app (.app bundle).
-cd app
-npm run tauri build -- --bundles app
+(cd app && npm run tauri build -- --bundles app)
 # Omit `--bundles app` to build the DMG as well.
 ```
+
+Tauri's `beforeBuildCommand` runs `tools/build_sidecar.sh` first, so the
+standalone Python engine is rebuilt for the current target triple even if
+a staged executable already exists. Packaging prerequisites are the same
+Rust/Node/uv/Xcode Command Line Tools listed above; PyInstaller is fetched
+by `uv`. The sidecar is staged at
+`app/src-tauri/binaries/tetris-core-<target-triple>`.
 
 The installed app runs the bundled `tetris-core` sidecar next to the
 executable. The sidecar contains the Python runtime and this release's
@@ -203,22 +203,25 @@ once and the next level starts by itself — no Enter needed.
 
 ## Development
 
+Run these from the repository root; each subshell leaves the shell at the
+root afterward.
+
 ```sh
 # Python core tests (232 tests)
-cd core && uv run pytest
+(cd core && uv run pytest)
 
-# Front-end type check, music state-machine test, and build
-cd app && npm run typecheck && npm test && npm run build
+# Front-end type check, music/SFX tests, and production build
+(cd app && npm run typecheck && npm test && npm run build)
 
 # Rust shell check
-cd app/src-tauri && cargo check
-
-# Build the standalone Python sidecar for release packaging
-cd ../.. && ./tools/build_sidecar.sh
+(cd app/src-tauri && cargo check)
 
 # Headless autopilot benchmarks (no UI, no pacing)
-cd core && uv run python simulate_autopilot.py --strategy highscore --runs 100
+(cd core && uv run python simulate_autopilot.py --strategy highscore --runs 100)
 ```
+
+For the full packaged build (sidecar + `.app`), see
+[Build and run](#build-and-run).
 
 ### Autopilot tuning
 
