@@ -506,8 +506,14 @@ def build_variants() -> dict[str, dict]:
     # Keep archived one-piece profile sweeps reproducible. The preview entry
     # drives exactly the Highscore planner selected by Home in the app.
     v["preview"] = copy.deepcopy(v["cur"])
+    v["preview20"] = dict(copy.deepcopy(v["cur"]), ready_row_weight=20.0)
+    v["preview28"] = dict(copy.deepcopy(v["cur"]), ready_row_weight=28.0)
+    v["previewClean"] = dict(copy.deepcopy(v["preview28"]), ready_row_hole_cost=2.0)
+    v["previewGuard"] = dict(copy.deepcopy(v["preview28"]), danger_h=9.0)
+    v["previewGuard"]["danger_w"]["landing_credit"] = 1.0
+    preview_names = {"preview", "preview20", "preview28", "previewClean", "previewGuard"}
     for name, profile in v.items():
-        profile["preview"] = name == "preview"
+        profile["preview"] = name in preview_names
     return v
 
 

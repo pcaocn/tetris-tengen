@@ -5,7 +5,7 @@ The autopilot's behaviour is a set of weights in
 weights headlessly and compare them, so a change to the strategy can be
 chosen on measurements instead of on a hunch.
 
-Highscore also uses the visible preview through `core/tetris_core/lookahead.py`.
+Highscore also uses the visible preview through `core/tetris_core/lookahead.py`. In the sweep, `preview` selects the app's Highscore policy. `preview20` and `preview28` explicitly give each ready row 20 or 28 units before the danger blend. `previewClean` starts at 28 and subtracts two per buried hole down to a floor of 20. `previewGuard` uses 28, starts blending toward survival at height 9, and gives credit for the rows a clear removes at full danger.
 
 Four scripts, each with a distinct job:
 
@@ -31,7 +31,7 @@ Every command below is run from `core/`.
 
 ```sh
 # Compare the one-piece baseline with the live two-piece planner on desktop time.
-uv run python sweep_autopilot.py --only cur,preview --elapsed-frames --seeds 400 --master-seed 909317 --cap 250000 --out ../stats/preview-comparison.csv
+uv run python sweep_autopilot.py --only cur,preview20,preview28,previewClean,previewGuard --elapsed-frames --seeds 400 --master-seed 909317 --cap 250000 --out ../stats/preview-comparison.csv
 
 # A quick look at a few candidates (a couple of minutes).
 uv run python sweep_autopilot.py --seeds 100 --only cur,sh4,sh6 --workers 4

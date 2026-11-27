@@ -18,18 +18,21 @@ def position(kind, preview, heights):
     return game, columns
 
 
-def test_preview_changes_first_move_and_sets_up_triple():
+@pytest.mark.parametrize("ready_weight,scoring_lock,clear_size", [(20, 2, 3), (28, 4, 4)])
+def test_preview_changes_first_move_and_converts_the_well(monkeypatch, ready_weight,
+                                                          scoring_lock, clear_size):
+    monkeypatch.setitem(autopilot.STRATEGIES["highscore"], "ready_row_weight", ready_weight)
     heights = [3, 3, 2, 3, 4, 4, 3, 4, 4, 0]
     game, _ = position(Piece.T, Piece.I, heights)
     other, _ = position(Piece.T, Piece.O, heights)
     assert lookahead.plan(game, SPAWN_X, SPAWN_Y) != lookahead.plan(other, SPAWN_X, SPAWN_Y)
     assert game._rng._i == 2  # evaluating the preview must never draw another piece
-    for _ in range(150):
+    for _ in range(250):
+        before = game.lines
         game.update()
-        if game.lock_count == 2:
+        if game.lines > before:
             break
-    assert game.lock_count == 2
-    assert game.lines == 3
+    assert (game.lock_count, game.lines - before) == (scoring_lock, clear_size)
 
 
 def test_avoids_blocking_preview_spawn():
@@ -116,3 +119,10 @@ def test_held_drop_at_first_contact_is_used_for_placement_points():
     landing = next(lookahead._landings(game, columns))
     assert landing.route == ()
     assert landing.placement_award == 1
+
+
+def test_well_bonus_fades_with_buried_holes():
+    weights = {"ready_row_weight": 28, "ready_row_hole_cost": 2}
+    assert [lookahead._ready_row_weight(weights, n) for n in (0, 1, 2, 3, 4, 10)] == [
+        28, 26, 24, 22, 20, 20,
+    ]

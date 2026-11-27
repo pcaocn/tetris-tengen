@@ -167,6 +167,13 @@ def _features(cols):
     return heights, holes, row_edges, col_edges, wells, deepest
 
 
+def _ready_row_weight(weights: dict, holes: int) -> float:
+    """A benchmark profile can reserve extra well credit for clean boards."""
+    weight = weights.get("ready_row_weight", READY_ROW_WEIGHT)
+    discount = weights.get("ready_row_hole_cost", 0.0) * holes
+    return max(20.0, weight - discount)
+
+
 def _ready_rows(cols):
     """Rows a single future vertical I could complete from above."""
     full = one_missing = WALL
@@ -198,8 +205,8 @@ def plan(game: Game, spawn_x: int, spawn_y: int) -> tuple[str, ...]:
             for x in range(WIDTH)]
     weights = dict(autopilot.STRATEGIES["highscore"], defer_w=0)
     weights["points_w"] = SAFE_CLEAR_WEIGHT
-    initial = _features(cols)
-    danger = autopilot._danger(max(initial[0]), initial[1], weights)
+    heights, holes, *_ = _features(cols)
+    danger = autopilot._danger(max(heights), holes, weights)
     # Build a preview shadow without calling spawn, drawing RNG or saving scores.
     preview = copy(game)
     preview._piece_kind = game.next_piece
@@ -211,7 +218,7 @@ def plan(game: Game, spawn_x: int, spawn_y: int) -> tuple[str, ...]:
     preview.board = None  # only populated for obstructed routes
     points_weight = autopilot._lerp(weights["points_w"], weights["danger_w"]["points_w"], danger)
     evaluate = autopilot._board_evaluator(weights, danger)
-    setup_weight = READY_ROW_WEIGHT * (1 - danger)
+    setup_weight = _ready_row_weight(weights, holes) * (1 - danger)
     best = None
     best_route = ()
     for first in _landings(game, cols):
