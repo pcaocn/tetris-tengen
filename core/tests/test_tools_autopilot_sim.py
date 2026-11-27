@@ -19,20 +19,22 @@ def load_tools_runner():
 
 
 def test_tools_runner_does_not_touch_player_highscore(tmp_path, monkeypatch):
-    """The tools runner must use NO_SAVE even when a player table exists.
-
-    Seed 1253421050 is a deterministic qualifying run under the current
-    rules: it tops out with a positive score. The test does not hardcode
-    the historic 91,300-point write; it only requires a real game over
-    whose score would beat the seeded low score, then proves the player
-    table stayed byte-for-byte identical.
-    """
+    """Exercise a real qualifying top-out independently of planner strength."""
     player_path = tmp_path / "player-highscore.json"
     highscore.add(1, player_path)
     before = player_path.read_bytes()
 
     monkeypatch.setenv("TETRIS_HIGHSCORE_PATH", str(player_path))
     runner = load_tools_runner()
+    class NearTopOut(runner.Game):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.score = 100
+            self._piece_y = 17
+            self.board.lock_cells([(x, 3) for x in range(1, 10)], 1)
+            self.board.lock_cells([(x, 4) for x in range(1, 10)], 1)
+
+    monkeypatch.setattr(runner, "Game", NearTopOut)
     result = runner.run_one(1253421050)
 
     assert result["died"] is True

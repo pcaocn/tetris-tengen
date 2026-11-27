@@ -5,6 +5,8 @@ The autopilot's behaviour is a set of weights in
 weights headlessly and compare them, so a change to the strategy can be
 chosen on measurements instead of on a hunch.
 
+Highscore also uses the visible preview through `core/tetris_core/lookahead.py`.
+
 Four scripts, each with a distinct job:
 
 | Script | Job |
@@ -14,9 +16,7 @@ Four scripts, each with a distinct job:
 | `analyze_frontier.py` | Test a sweep CSV **statistically** (paired McNemar + bootstrap CI). |
 | `compare_autopilot.py` | Print a plain side-by-side table of two benchmark CSVs. |
 
-All of them run the real `Game` object with the real autopilot code — only
-the 60 Hz sleep between frames is removed, so a score measured headlessly
-is a score the app could really produce.
+The simulators drive the real game engine without sleeping between ticks. Historical runs skip the timed celebration window. Use `--elapsed-frames` on the sweep to include it when comparing scores at a fixed desktop duration.
 
 ## Prerequisites
 
@@ -30,6 +30,9 @@ Every command below is run from `core/`.
 ## 1. Sweep: compare strategy variants
 
 ```sh
+# Compare the one-piece baseline with the live two-piece planner on desktop time.
+uv run python sweep_autopilot.py --only cur,preview --elapsed-frames --seeds 400 --master-seed 909317 --cap 250000 --out ../stats/preview-comparison.csv
+
 # A quick look at a few candidates (a couple of minutes).
 uv run python sweep_autopilot.py --seeds 100 --only cur,sh4,sh6 --workers 4
 
@@ -48,6 +51,7 @@ uv run python sweep_autopilot.py --seeds 400 --master-seed 77777 --workers 4 \
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--seeds N` | 100 | How many seeds to play. More seeds = less noise; the spec's numbers use 400. |
+| `--elapsed-frames` | off | Count the timed celebrations as desktop autopilot does. |
 | `--cap N` | 250000 | Frame budget per run (≈ 69 min of game time at 60 Hz). |
 | `--master-seed N` | 11111 | The seed the **seed list** is drawn from. Fixes the whole sweep. |
 | `--only A,B,C` | all | Run only these variants (names come from `build_variants()`). |
@@ -55,7 +59,7 @@ uv run python sweep_autopilot.py --seeds 400 --master-seed 77777 --workers 4 \
 | `--workers N` | ≤ 8 | Parallel worker processes. **Use 4** on a busy machine. |
 
 Variant names worth knowing: `baseline` (the pre-2026-10-29 profile),
-`cur` (the currently shipped profile), `sh4`/`sh6`/`sh8`/`sh12` (the
+`cur` (the historical one-piece benchmark reference), `sh4`/`sh6`/`sh8`/`sh12` (the
 score/survival trade-off curve), `dw0`…`dw60` (the aggressiveness dial),
 `dwl2`…`dwl4` and `dmax1` (the deferral refinements). The full list —
 and the history of each round — is in `build_variants()` in

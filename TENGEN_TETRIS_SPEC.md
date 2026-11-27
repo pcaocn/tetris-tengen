@@ -239,14 +239,15 @@ Source: TetrisWiki, "Tetris (NES, Tengen)" gravity table. Open item: the exact s
 ### 4.11 Autopilot (cheat; owner request 2026-10-27, throttled and given two strategies 2026-10-28)
 
 - With the Konami cheat active, **End** selects strategy #1 and **Home** selects strategy #2; either key turns the autopilot off again, and switching keys switches strategies. Outside cheat mode neither key does anything. The mode persists across games. The UI shows `AUTO - QUICK CLEAR LINES` or `AUTO - HIGH SCORE` above the playfield while it drives.
-- The placement search (`core/tetris_core/autopilot.py`) enumerates every landing for the current piece, simulates the lock and line clears, and scores the result with published **El-Tetris** feature weights — landing height, cleared rows, row/column transitions, holes, well sums (one-piece lookahead). Pure functions; no game rules live there. Named "autopilot", not "AI": it is pure calculation.
-- Execution (`Game._autopilot_step`) is throttled to **human input speed** (owner correction 2026-10-28: "auto mode, not god mode"): one rotation or one lateral step per frame — the discrete key-press rate of tapping X or the arrows — while the piece descends at soft-drop speed through the normal gravity machinery (the Down-key rate). The plan is computed once per piece; a blocked step (or no legal placement at all) abandons the piece to fall naturally.
+- Quick evaluates straight-drop targets for the active piece. Highscore evaluates reachable routes for the active piece and its visible successor.
+- Both modes issue at most one rotation or lateral move per frame and hold Down through the normal gravity and lock code. Switching control clears held inputs.
+
 - While the autopilot drives, human movement inputs are ignored; Enter (pause) still works. **The end-of-stage celebration is never skipped by the autopilot itself** — the celebration plays for its full window and the next level starts by itself (owner request 2026-10-29, section 5).
 - Protocol: `set_autopilot` command (`{"cmd": "set_autopilot", "mode": "quick" | "highscore" | null}`); the state event reports `"autopilot"`.
 
 #### 4.11.1 How the placement search works
 
-Both strategies use the **same** search; only the weights differ.
+Quick and the historical single-piece Highscore baseline use the following search. The current Highscore planner is described in 4.11.3.
 
 For the piece that is about to fall, the search tries every legal placement — each of the four rotation states, at every column where the piece fits — and for each candidate it:
 
@@ -294,7 +295,11 @@ That is a single seed at a fixed window: enough to show the *shape* of the strat
 
 Selected with **Home**; the UI shows `AUTO - HIGH SCORE`.
 
-Maximizes score rather than line rate. Because the Tengen award table is strongly super-linear (a tetris pays 25x a single), the strategy is built around **hunting tetrises and triples** and refusing the small clears that would get in their way.
+The current planner in `core/tetris_core/lookahead.py` starts at the live pose and fall timers. It tries alternate orders of immediate left, right and rotation inputs, then lets the piece fall. It keeps one route per rotation geometry and column. Delayed tucks may be missed. Each candidate is followed by a reachable placement for the visible preview, using its actual spawn position and the level after the first clear. A candidate that leaves room to spawn the preview outranks one that blocks it.
+
+The search credits the placement and clear awards from both locks, scores the resulting board once and executes the first route. On low stacks each 100 award points earns 5 evaluation units. Each row that a vertical I could complete with a straight drop into an open well earns 20 units, up to four rows. The setup bonus fades to zero as the stack rises from 10 to 16 rows, and the award weight fades to 1. There is no blanket penalty for a single or double.
+
+**Historical single-piece profile.** The following weights, deferral rule and archived measurements describe the baseline used in the tuning studies below. It maximizes score rather than line rate. Because the Tengen award table is strongly super-linear (a tetris pays 25x a single), the strategy is built around **hunting tetrises and triples** and refusing the small clears that would get in their way.
 
 | Weight | Value | Effect |
 | --- | --- | --- |

@@ -30,10 +30,10 @@ from __future__ import annotations
 from enum import Enum
 
 from . import autopilot
-from . import highscore
+from . import highscore, lookahead
 from .board import HEIGHT, Board, HIDDEN_ROWS
 from .gravity import frames_per_row, soft_drop_fpr
-from .pieces import Piece, ROTATIONS
+from .pieces import Piece, ROTATIONS, ROTATION_KICKS
 from .rng import PieceRNG
 from .scoring import (
     MAX_LEVEL,
@@ -200,12 +200,10 @@ class Game:
         plays, it does not press Enter, so the celebration runs its full
         window and the next level starts by itself (owner request
         2026-10-29). The mode persists across games."""
+        self._clear_held_input()
         self.autopilot = mode
         self._autopilot_plan = None
         self._autopilot_abandoned = False
-        if mode is None:
-            # The autopilot held soft drop; hand back a clean key state.
-            self._soft_drop = False
 
     def pause(self) -> None:
         if self.status is Status.PLAYING:
@@ -224,6 +222,7 @@ class Game:
 
     def _clear_held_input(self) -> None:
         """Drop every held-key latch without touching the piece."""
+        self._route = None
         self._stop_das()
         self._soft_drop = False
         self._soft_held = 0
@@ -249,6 +248,8 @@ class Game:
                 self._stop_das()
             return
         if action == "soft_drop_off":
+            if self.autopilot:
+                return
             self._soft_drop = False
             self._soft_held = 0
             return
@@ -331,6 +332,14 @@ class Game:
             # input speed; the gravity, lock-delay, and clear machinery
             # below run unchanged underneath it.
             changed |= self._autopilot_step()
+        moved, locked = self._fall_frame()
+        if locked:
+            self._lock()
+        return changed or moved or locked
+
+    def _fall_frame(self) -> tuple[bool, bool]:
+        """Advance the falling timers; the caller commits a lock if due."""
+        changed = False
         # ---- Step 5: gravity ------------------------------------------
         if self._can_move(0, 1):
             # Airborne: the rest window is cancelled (spec 4.4). Gravity
@@ -344,7 +353,7 @@ class Game:
             if self._can_move(0, 1):
                 # Still airborne after gravity: nothing else to do this
                 # frame (the piece did not land).
-                return changed
+                return changed, False
         # ---- Step 6: lock delay ---------------------------------------
         # The piece is resting on the floor/stack this frame (the landing
         # frame counts as the first resting frame). It keeps a grace window
@@ -359,11 +368,7 @@ class Game:
         if self._rest_frames == 0:
             self._landing_soft_drop = self._soft_drop
         self._rest_frames += 1
-        if self._rest_frames > lock_delay_frames(self.level):
-            # The window expired: freeze the piece into the board.
-            self._lock()
-            return True
-        return changed
+        return changed, self._rest_frames > lock_delay_frames(self.level)
 
     def set_level(self, level: int) -> bool:
         """Cheat (owner request 2026-10-25): jump to the given level
@@ -377,6 +382,7 @@ class Game:
         """
         if self.status is not Status.PLAYING:
             return False
+        self._route = None
         stage_start = self._next_stage_line - stage_lines_for_level(self.level)
         self.level = max(0, min(level, 9))
         self._next_stage_line = stage_start + stage_lines_for_level(self.level)
@@ -427,32 +433,24 @@ class Game:
         return self.board.cells_free(cells)
 
     def _autopilot_step(self) -> bool:
-        """Autopilot step (owner request 2026-10-27, throttled
-        2026-10-28): drive the piece toward the planned (rotation,
-        column) at human input speed — never faster than a player holding
-        Down and tapping X. One rotation or one lateral step per frame
-        (the discrete key-press rate), descending at soft-drop speed via
-        the normal gravity machinery (the Down-key rate). The plan is
-        computed once per piece; if the way is blocked or no legal
-        placement exists, the piece is abandoned to fall naturally.
+        """Issue at most one steering input this frame and hold Down.
 
-        THE THROTTLE IS THE POINT
-        --------------------------
-        The autopilot gets no special abilities: it moves the piece by
-        calling the same `_try_rotate` and `_move` methods a human
-        keypress reaches. At most ONE of those happens per frame, which
-        is the rate at which a person can tap X or mash an arrow. It
-        also holds soft drop, so the piece descends at the Down-key rate.
-
-        The consequence is that the autopilot's games are directly
-        comparable to human games — it is "auto mode", not "god mode"
-        (owner request 2026-10-28).
+        Highscore follows a route selected using the visible preview.
+        Quick steers toward a single-piece straight-drop target and gives
+        up on the placement if its path is blocked.
         """
         assert self._piece_kind is not None  # caller checked
         # Descend at soft-drop speed (the fastest a player can drop).
         # Setting the flag is enough: the normal gravity machinery below
         # picks it up, so the piece falls exactly like a held Down key.
         self._soft_drop = True
+        if self.autopilot == "highscore" and autopilot.STRATEGIES["highscore"].get("preview", True):
+            if self._route is None:
+                self._route = iter(lookahead.plan(self, SPAWN_X, SPAWN_Y))
+            action = next(self._route, None)
+            if action is None:
+                return False
+            return lookahead.steer(self, action)
         if self._autopilot_abandoned:
             # The plan is unreachable; just let the piece fall.
             return False
@@ -606,7 +604,7 @@ class Game:
         # The new rotation state, wrapping in both directions.
         new_rot = (self._rot + direction) % 4
         base = ROTATIONS[self._piece_kind][new_rot]
-        for kick in (0, -1):
+        for kick in ROTATION_KICKS:
             # Place the rotated shape at the piece's current position,
             # shifted by the kick amount.
             cells = [
@@ -721,6 +719,7 @@ class Game:
         self._landing_soft_drop = False
         # The autopilot must plan again for the new piece (the board
         # changed, so the old plan is worthless).
+        self._route = None
         self._autopilot_plan = None  # replan for the new piece
         self._autopilot_abandoned = False
         if not self.board.cells_free(self.piece_cells()):

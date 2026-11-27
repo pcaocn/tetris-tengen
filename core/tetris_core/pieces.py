@@ -63,6 +63,9 @@ class Piece(IntEnum):
     L = 7
 
 
+ROTATION_KICKS = (0, -1)  # Tengen tests in-place rotation, then one cell left.
+
+
 # piece -> 4 rotation states, each a tuple of 4 (x, y) cell offsets.
 ROTATIONS: dict[Piece, tuple[tuple[tuple[int, int], ...], ...]] = {
     # I: 4-wide horizontal bar on the top row; vertical I in the SECOND

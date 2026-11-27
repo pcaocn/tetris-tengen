@@ -503,6 +503,11 @@ def build_variants() -> dict[str, dict]:
     #     deferral is pure point-refusal.
     v["dmax1"] = variant("dmax1", defer_max=1.0)[1]
     v["dmax1w2"] = variant("dmax1w2", defer_max=1.0, defer_well=2.0)[1]
+    # Keep archived one-piece profile sweeps reproducible. The preview entry
+    # drives exactly the Highscore planner selected by Home in the app.
+    v["preview"] = copy.deepcopy(v["cur"])
+    for name, profile in v.items():
+        profile["preview"] = name == "preview"
     return v
 
 
@@ -519,7 +524,8 @@ def run_one(job) -> dict:
     `Game` and the real `autopilot` code -- the sweep never re-implements
     the game, it only changes the weights.
     """
-    seed, profile, cap = job
+    seed, profile, cap, *options = job
+    elapsed_frames = bool(options and options[0])
     # Install this run's weights as THE highscore profile.
     autopilot.STRATEGIES["highscore"] = profile
     # A fresh game on a seeded RNG with a private score sink: benchmark
@@ -539,11 +545,8 @@ def run_one(job) -> dict:
     while game.status is not Status.GAME_OVER and frames < cap:
         game.update()
         frames += 1
-        if game.status is Status.LEVEL_COMPLETE:
-            # The end-of-stage celebration would wait for a human to
-            # press Enter. Resume it the way the UI's Enter key does,
-            # so the game keeps playing. (In the real app the
-            # celebration plays out by itself -- spec 5.)
+        if game.status is Status.LEVEL_COMPLETE and not elapsed_frames:
+            # The historical active-frame benchmark skips this timed pause.
             game.pause()
         if game.lines > prev_lines:
             # The line count jumped: a clear just happened. The size of
@@ -627,6 +630,7 @@ def main() -> None:
     still shows progress.
     """
     ap = argparse.ArgumentParser()
+    ap.add_argument("--elapsed-frames", action="store_true", help="include stage celebrations as in desktop play")
     ap.add_argument("--seeds", type=int, default=100)
     ap.add_argument("--cap", type=int, default=250_000)
     ap.add_argument("--master-seed", type=int, default=11111)
@@ -657,7 +661,7 @@ def main() -> None:
 
     print(f"Sweep: {len(variants)} variants x {args.seeds} seeds, "
           f"budget {args.cap:,} frames each")
-    print("Timing: active play frames; end-of-stage celebrations are skipped.")
+    print("Timing: elapsed desktop frames" if args.elapsed_frames else "Timing: active play frames")
     print(f"Seed master {args.master_seed}\n")
 
     rows: list[dict] = []
@@ -682,7 +686,7 @@ def main() -> None:
     # ---- Run every variant ------------------------------------------
     for name, profile in variants.items():
         # One job per seed: (seed, profile, frame budget).
-        jobs = [(s, profile, args.cap) for s in seeds]
+        jobs = [(s, profile, args.cap, args.elapsed_frames) for s in seeds]
         results = []
         # A fresh pool per variant: the workers inherit the profile
         # through the job tuple, so no shared state leaks between them.

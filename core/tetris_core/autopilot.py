@@ -1,28 +1,12 @@
 """Autopilot placement search (cheat mode; owner request 2026-10-27).
 
-Enumerates every landing for the current piece, simulates the lock and
-line clears, and scores the result with published El-Tetris feature
-weights. Pure functions over the board: no game rules live here, and
-nothing is mutated. Named "autopilot", not "AI": it is pure calculation.
+Quick and the historical Highscore benchmark enumerate straight drops for
+the current piece. Each candidate locks onto a copy of the board, clears
+completed rows, and receives a score based on its landing height and the
+resulting board features. The best-scoring rotation and column win.
 
-Two strategies (owner request 2026-10-28):
-- "quick": clear lines as quickly as possible — the classic linear
-  El-Tetris scoring; a single is as good as part of a tetris.
-- "highscore": maximize score — defer 1-2 line clears while the stack is
-  safe (they block would-be tetrises and triples), reward clears by
-  their point value (a tetris is worth 25x a single), relax the well
-  penalty (the strategy needs a well column), and let the stack build
-  freely up to a knee before the landing-height cost rises.
-
-HOW THE SEARCH WORKS (the whole algorithm in one paragraph)
-------------------------------------------------------------
-For the piece that is about to fall, try EVERY legal placement: each of
-the four rotation states, at every column where the piece fits. For each
-candidate, simulate the lock on a COPY of the board (including the line
-clears it would cause) and compute a single number: the El-Tetris score
-of the resulting position. The candidate with the highest number wins.
-That is the entire strategy -- the difference between "quick" and
-"highscore" is only WHICH weights are used to compute that number.
+Desktop Highscore uses the two-piece route planner in lookahead.py. Both
+searches share the feature weights and danger ramp in this module.
 
 WHY SIMULATE INSTEAD OF SCORING THE CURRENT BOARD
 -------------------------------------------------
@@ -310,6 +294,7 @@ def _score(
     landing_height: float,
     w: dict,
     danger: float = 0.0,
+    evaluate=None,
 ) -> float:
     """Score a simulated position. Higher is better.
 
@@ -398,135 +383,57 @@ def _score(
         # Bank the well that ran to the bottom of the column.
         well_sums += depth * (depth + 1) // 2
         max_well = max(max_well, depth)
-    # ---- Weight blending --------------------------------------------
-    # Board fullness (owner request 2026-10-29): blend the weights toward
-    # their danger values as the stack fills, so past half full the
-    # strategy stops hunting tetrises and plays to survive.
-    dw = w.get("danger_w") or {}
-    landing_w = _lerp(w["landing_w"], dw.get("landing_w", w["landing_w"]), danger)
-    landing_free = _lerp(w["landing_free"], dw.get("landing_free", w["landing_free"]), danger)
-    well_w = _lerp(w["well_w"], dw.get("well_w", w["well_w"]), danger)
-    holes_w = _lerp(w["holes_w"], dw.get("holes_w", w["holes_w"]), danger)
-    # Aggregate height (owner request 2026-10-29): the total number of
-    # filled cells in the stack. El-Tetris has no feature for it, and
-    # that is exactly why the strategy can fill the board without ever
-    # clearing it: every term it knows about is either about the shape
-    # of one landing or about the points of the clear, and the landing
-    # cost of a tetris high on the stack dwarfs the points it earns.
-    # The measured early deaths all look the same -- every column at
-    # height 13-20, the stack at the ceiling -- so the missing reward
-    # is for taking the stack DOWN. A tetris removes four rows from
-    # every column it crosses, which this term sees and the landing
-    # height does not.
-    agg_w = _lerp(w.get("agg_w", 0.0), dw.get("agg_w", w.get("agg_w", 0.0)), danger)
-    maxh_w = _lerp(w.get("maxh_w", 0.0), dw.get("maxh_w", w.get("maxh_w", 0.0)), danger)
-    # Clearing lines gets more valuable as the stack fills (owner request
-    # 2026-10-29). Past half full, a board that is never cleared IS a
-    # board that dies: with only the landing penalty in play the
-    # strategy stops clearing entirely and the stack fills up instead.
-    points_w = _lerp(w["points_w"], dw.get("points_w", w["points_w"]), danger)
-    # A flat reward per cleared row, blended the same way. The highscore
-    # profile leaves "lines_w" at 0 and pays for clears by their point
-    # value instead, which is the right trade while the stack is safe
-    # (a tetris is worth 25x a single) but the wrong one once the
-    # stack is tall: a single clear is worth 1 point there, against a
-    # landing cost of 14 per row, so no clear is ever worth taking and
-    # the board fills up instead. Measured on the death boards: every
-    # column between 13 and 20 rows high, holes everywhere, and not one
-    # tetris in sight. "lines_w" in the danger weights pays per ROW, so
-    # even a single becomes worth taking when the stack is high.
-    lines_w = _lerp(w["lines_w"], dw.get("lines_w", w["lines_w"]), danger)
-    # Credit a placement for the stack height its own clear removes.
-    # "landing_height" is measured from the piece's resting cells on the
-    # PRE-lock board, but _lock drops the cleared rows from the top of
-    # the grid, so the stack the placement leaves behind is that many
-    # rows lower than where the piece came to rest. Without this credit
-    # a tetris is charged the landing cost of four rows it just deleted:
-    # at full danger that is 4 * -14 = -56 against a clear worth +25
-    # points, so the strategy refuses to cash in a tetris even when the
-    # clear is exactly what it needs. The credit is the missing
-    # "reward taking the stack DOWN" term, expressed in the units the
-    # landing height already uses.
-    credit = _lerp(
-        w.get("landing_credit", 0.0),
-        dw.get("landing_credit", w.get("landing_credit", 0.0)),
-        danger,
-    )
-    # Apply the credit: each cleared row reduces the landing height that
-    # is charged for. The max(0.0, ...) keeps the height non-negative.
-    landing_height = max(0.0, landing_height - credit * cleared)
-    # Clear term: linear lines (quick) or point-valued clears with a
-    # deferral cost for burning 1-2 line clears while the stack is safe
-    # and clean (highscore); holes or a tall stack waive the deferral —
-    # survival first.
-    #
-    # `points_for_clear(cleared) / 100` normalises the Tengen award
-    # values to a small number: a single is worth 1, a double 4, a
-    # triple 9, and a tetris 25. Those are the numbers the profile
-    # thinks in.
-    clear_term = lines_w * cleared + points_w * (
-        points_for_clear(cleared) / 100
-    )
-    # The deferral cost fades out as the stack fills, replacing the hard
-    # cutoff at safe_h with a smooth ramp.
-    defer_w = w["defer_w"] * (1.0 - danger)
-    # "defer_well": only hold back a small clear when a big one is
-    # actually reachable. A tetris needs a one-column well four rows
-    # deep; deferring a clear on a board with no deep well is not
-    # "saving rows for a tetris", it is just refusing points. Measured
-    # on live games, a deferred piece is followed by a tetris within
-    # 12 pieces about as often as a non-deferred one, so the deferral
-    # is not buying the clears it hopes for.
-    if w.get("defer_well", 0.0) > 0.0 and max_well < w["defer_well"]:
-        defer_w = 0.0
-    # The deferral itself: refuse a small clear (1 or 2 rows) when the
-    # stack is still low, clean, and the board is not yet dangerous.
-    #
-    # All four conditions must hold:
-    #   - defer_w is still active (the stack is not yet dangerous)
-    #   - the clear was small (1..defer_max rows)
-    #   - the tallest column is below safe_h
-    #   - there are no holes anywhere
-    # The cost is subtracted, so the placement looks WORSE than taking
-    # the clear would -- the strategy has to be convinced the clear is
-    # not worth taking.
-    if (
-        defer_w
-        and 1 <= cleared <= w.get("defer_max", 2.0)
-        and max(heights) < w["safe_h"]
-        and holes == 0
-    ):
-        clear_term -= defer_w
-    # Flatness (owner request 2026-10-29): the sum of the height steps
-    # between neighbouring columns. A flat board is easy to recover; a
-    # board with a deep canyon next to a tall tower is not, and the
-    # canyon does not register as a "well" (the well metric needs both
-    # neighbours filled at that row). The penalty ramps up with danger;
-    # "flat_base" is the share that applies even to a safe board, so a
-    # canyon is not dug while the stack is still low (it would be fatal
-    # by the time it matters).
-    flat_w = w.get("flat_w", 0.0)
+    if evaluate is None:
+        evaluate = _board_evaluator(w, danger)
+    return evaluate(cleared, landing_height, heights, holes, row_transitions,
+                    col_transitions, well_sums, max_well)
+
+
+def _board_evaluator(w: dict, danger: float):
+    """Blend the strategy weights once for all landings from the same board."""
+    danger_weights = w.get("danger_w") or {}
+
+    def blend(name):
+        base = w.get(name, 0.0)
+        return _lerp(base, danger_weights.get(name, base), danger)
+
+    landing_w = blend("landing_w")
+    landing_free = blend("landing_free")
+    credit = blend("landing_credit")
+    holes_w = blend("holes_w")
+    well_w = blend("well_w")
+    agg_w = blend("agg_w")
+    maxh_w = blend("maxh_w")
+    points_w = blend("points_w")
+    lines_w = blend("lines_w")
+    clears = [lines_w * n + points_w * (points_for_clear(n) / 100) for n in range(5)]
+    defer = w["defer_w"] * (1.0 - danger)
+    min_well = w.get("defer_well", 0)
+    defer_max = w.get("defer_max", 2)
     flat_base = w.get("flat_base", 0.0)
-    # The total "roughness" of the surface: one unit per row of height
-    # difference between two neighbouring columns.
-    flatness = sum(
-        abs(heights[x] - heights[x + 1]) for x in range(WIDTH - 1)
-    )
-    # ---- The final linear combination -------------------------------
-    # `landing_free` is the height the piece may land at for free: the
-    # cost only applies to the rows ABOVE it, which is how the highscore
-    # profile lets the stack build up a little before it starts caring.
-    return (
-        landing_w * max(0.0, landing_height - landing_free)
-        + clear_term
-        + W_ROW_TRANSITIONS * row_transitions
-        + W_COL_TRANSITIONS * col_transitions
-        + holes_w * holes
-        + well_w * well_sums
-        + flat_w * (flat_base + (1.0 - flat_base) * danger) * flatness
-        + agg_w * sum(heights)
-        + maxh_w * max(heights)
-    )
+    flat_w = w.get("flat_w", 0.0) * (flat_base + (1.0 - flat_base) * danger)
+
+    def evaluate(cleared, landing_height, heights, holes, row_edges, col_edges, wells, deepest):
+        # Legacy profiles can defer a small clear on a low, clean stack.
+        clear_term = clears[cleared]
+        if (defer and 1 <= cleared <= defer_max and holes == 0
+                and max(heights) < w["safe_h"] and deepest >= min_well):
+            clear_term -= defer
+        height = max(0.0, landing_height - credit * cleared)
+        roughness = sum(abs(a - b) for a, b in zip(heights, heights[1:])) if flat_w else 0
+        return (
+            landing_w * max(0.0, height - landing_free)
+            + clear_term
+            + W_ROW_TRANSITIONS * row_edges
+            + W_COL_TRANSITIONS * col_edges
+            + holes_w * holes
+            + well_w * wells
+            + flat_w * roughness
+            + agg_w * sum(heights)
+            + maxh_w * max(heights)
+        )
+
+    return evaluate
 
 
 def best_placement(
@@ -560,6 +467,7 @@ def best_placement(
     # must be judged against the SAME danger level, otherwise the
     # comparison between them would be unfair.
     danger = _danger(_max_height(base), _holes(base), w)
+    evaluate = _board_evaluator(w, danger)
     for rot in range(rot_count):
         # The column range for this rotation: the piece's own width
         # decides how far left or right it may start. `min(xs)` and
@@ -582,7 +490,7 @@ def best_placement(
             # and a tall one.
             landing_height = HEIGHT - sum(cy for _, cy in cells) / len(cells)
             # Score the resulting position with this strategy's weights.
-            score = _score(grid, cleared, landing_height, w, danger)
+            score = _score(grid, cleared, landing_height, w, danger, evaluate)
             # Keep the best so far. Strictly greater, so the FIRST
             # candidate wins a tie (deterministic behaviour).
             if best_score is None or score > best_score:
